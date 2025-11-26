@@ -21,6 +21,7 @@ const EMPLOYEE_SHEET_CANDIDATES = ['员工表.xlsx', 'employees.xlsx'];
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp']);
 const PDF_EXTENSIONS = new Set(['.pdf']);
+const EMU_PER_INCH = 914400;
 
 const DEFAULT_THEME = {
   primary: '#4472C4',
@@ -32,6 +33,12 @@ const DEFAULT_THEME = {
   background: '#F7F9FC',
 };
 
+const DEFAULT_LAYOUT = {
+  width: 10,
+  height: 5.625,
+  orientation: 'landscape',
+};
+
 async function main() {
   await fs.ensureDir(OUTPUT_DIR);
   await fs.ensureDir(PDF_IMAGE_DIR);
@@ -40,6 +47,7 @@ async function main() {
   const templatePath = await resolveExistingPath(TEMPLATE_CANDIDATES, '模板文件');
   const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表');
 
+  const layout = await loadTemplateLayout(templatePath);
   const theme = await loadThemeColors(templatePath);
   const employees = await loadEmployees(sheetPath);
 
@@ -67,14 +75,14 @@ async function main() {
         continue;
       }
 
-      const pptx = initializePresentation();
-      addCoverSlide(pptx, employee, assetInfo, theme);
-      addOverviewSlide(pptx, employee, assetInfo, theme);
-      addSummarySlide(pptx, employee, assetInfo, theme);
+      const pptx = initializePresentation(layout);
+      addCoverSlide(pptx, employee, assetInfo, theme, layout);
+      addOverviewSlide(pptx, employee, assetInfo, theme, layout);
+      addSummarySlide(pptx, employee, assetInfo, theme, layout);
 
       const imageItems = await buildImageItems(assetInfo, employee);
-      addImageSlides(pptx, employee, imageItems, theme);
-      addDocumentSlide(pptx, employee, assetInfo.attachments, theme);
+      addImageSlides(pptx, employee, imageItems, theme, layout);
+      addDocumentSlide(pptx, employee, assetInfo.attachments, theme, layout);
 
       const outputName = buildReportFileName(employee);
       const outputPath = path.join(OUTPUT_DIR, outputName);
@@ -145,6 +153,47 @@ async function loadThemeColors(templatePath) {
   } catch (error) {
     console.warn(`⚠️ 读取模板主题失败，将使用默认颜色。原因：${error.message}`);
     return DEFAULT_THEME;
+  }
+}
+
+async function loadTemplateLayout(templatePath) {
+  const fallback = { ...DEFAULT_LAYOUT };
+
+  if (!(await fs.pathExists(templatePath))) {
+    return fallback;
+  }
+
+  try {
+    const buffer = await fs.readFile(templatePath);
+    const zip = new PizZip(buffer);
+    const presentationFile = zip.file('ppt/presentation.xml');
+
+    if (!presentationFile) {
+      return fallback;
+    }
+
+    const xml = presentationFile.asText();
+    const sizeMatch = xml.match(/<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+
+    if (!sizeMatch) {
+      return fallback;
+    }
+
+    const widthEmu = parseInt(sizeMatch[1], 10);
+    const heightEmu = parseInt(sizeMatch[2], 10);
+
+    if (Number.isNaN(widthEmu) || Number.isNaN(heightEmu)) {
+      return fallback;
+    }
+
+    const width = Number((widthEmu / EMU_PER_INCH).toFixed(3));
+    const height = Number((heightEmu / EMU_PER_INCH).toFixed(3));
+    const orientation = width >= height ? 'landscape' : 'portrait';
+
+    return { width, height, orientation };
+  } catch (error) {
+    console.warn(`⚠️ 模板布局解析失败，将使用默认 16:9 布局。原因：${error.message}`);
+    return fallback;
   }
 }
 
@@ -278,9 +327,15 @@ function buildAttachmentLabel(fileName) {
   return parts.slice(1).join('-') || '附件';
 }
 
-function initializePresentation() {
+function initializePresentation(layout) {
   const pptx = new PptxGenJS();
-  pptx.layout = 'LAYOUT_16x9';
+  const layoutName = `TEMPLATE_${layout.width}x${layout.height}`;
+  pptx.defineLayout({
+    name: layoutName,
+    width: layout.width,
+    height: layout.height,
+  });
+  pptx.layout = layoutName;
   pptx.author = 'Health Manage AI';
   pptx.company = 'Health Manage AI';
   pptx.subject = '员工体检报告';
@@ -288,67 +343,86 @@ function initializePresentation() {
   return pptx;
 }
 
-function addCoverSlide(pptx, employee, assets, theme) {
+function getLayoutGuides(layout) {
+  const sideMargin = Number((layout.width * 0.08).toFixed(3));
+  const topMargin = Number((layout.height * 0.05).toFixed(3));
+  const bottomMargin = Number((layout.height * 0.06).toFixed(3));
+  const contentWidth = Number((layout.width - sideMargin * 2).toFixed(3));
+  return { sideMargin, topMargin, bottomMargin, contentWidth };
+}
+
+function addCoverSlide(pptx, employee, assets, theme, layout) {
   const slide = pptx.addSlide();
   slide.background = { color: theme.background.replace('#', '') };
+
+  const metrics = getLayoutGuides(layout);
+  const headerHeight = Math.max(0.4, layout.height * 0.04);
 
   slide.addShape('rect', {
     x: 0,
     y: 0,
-    w: 10,
-    h: 0.6,
+    w: layout.width,
+    h: headerHeight,
     fill: { color: theme.primary.replace('#', '') },
     line: { color: theme.primary.replace('#', '') },
   });
 
   slide.addText('2025 员工体检报告', {
-    x: 0.5,
-    y: 0.15,
-    fontSize: 20,
+    x: metrics.sideMargin,
+    y: headerHeight * 0.2,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 24 : 20,
     color: theme.textLight.replace('#', ''),
   });
 
+  const heroStartY = headerHeight + metrics.topMargin;
   slide.addText(employee.name, {
-    x: 0.6,
-    y: 1,
-    fontSize: 44,
+    x: metrics.sideMargin,
+    y: heroStartY,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 48 : 40,
     color: theme.primary.replace('#', ''),
     bold: true,
   });
 
   slide.addText(`工号：${employee.id}`, {
-    x: 0.65,
-    y: 2.1,
-    fontSize: 22,
+    x: metrics.sideMargin,
+    y: heroStartY + 0.9,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 22 : 18,
     color: theme.textDark.replace('#', ''),
   });
 
   slide.addText(`数据文件：${assets.stats.totalFiles}`, {
-    x: 0.65,
-    y: 2.7,
-    fontSize: 18,
+    x: metrics.sideMargin,
+    y: heroStartY + 1.5,
+    fontSize: layout.orientation === 'portrait' ? 20 : 18,
     color: theme.secondary.replace('#', ''),
   });
 
+  const summaryY = heroStartY + (layout.orientation === 'portrait' ? 2.2 : 1.8);
+  const summaryHeight = Math.max(2, layout.height - summaryY - metrics.bottomMargin);
   slide.addText(formatSummaryTeaser(assets.summaryText), {
-    x: 0.6,
-    y: 3.3,
-    w: 8.5,
-    h: 2.2,
+    x: metrics.sideMargin,
+    y: summaryY,
+    w: metrics.contentWidth,
+    h: summaryHeight,
     fontSize: 16,
     color: theme.textDark.replace('#', ''),
     lineSpacingMultiple: 1.2,
   });
 }
 
-function addOverviewSlide(pptx, employee, assets, theme) {
+function addOverviewSlide(pptx, employee, assets, theme, layout) {
   const slide = pptx.addSlide();
   slide.background = { color: 'FFFFFF' };
 
+  const metrics = getLayoutGuides(layout);
   slide.addText(`${employee.name} · 检查项概览`, {
-    x: 0.6,
-    y: 0.5,
-    fontSize: 28,
+    x: metrics.sideMargin,
+    y: metrics.topMargin,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 28 : 24,
     bold: true,
     color: theme.primary.replace('#', ''),
   });
@@ -377,11 +451,16 @@ function addOverviewSlide(pptx, employee, assets, theme) {
     });
   }
 
+  const tableY = metrics.topMargin + 0.8;
   slide.addTable(rows, {
-    x: 0.6,
-    y: 1.3,
-    w: 8.8,
-    colW: [1.5, 4.5, 2.8],
+    x: metrics.sideMargin,
+    y: tableY,
+    w: metrics.contentWidth,
+    colW: [
+      Number((metrics.contentWidth * 0.18).toFixed(3)),
+      Number((metrics.contentWidth * 0.5).toFixed(3)),
+      Number((metrics.contentWidth * 0.32).toFixed(3)),
+    ],
     border: { type: 'solid', color: theme.neutral.replace('#', ''), pt: 1 },
     fill: theme.background.replace('#', ''),
     autoPage: true,
@@ -399,14 +478,16 @@ function addOverviewSlide(pptx, employee, assets, theme) {
   });
 }
 
-function addSummarySlide(pptx, employee, assets, theme) {
+function addSummarySlide(pptx, employee, assets, theme, layout) {
   const slide = pptx.addSlide();
   slide.background = { color: theme.background.replace('#', '') };
 
+  const metrics = getLayoutGuides(layout);
   slide.addText(`${employee.name} · AI 体检总结`, {
-    x: 0.6,
-    y: 0.5,
-    fontSize: 28,
+    x: metrics.sideMargin,
+    y: metrics.topMargin,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 28 : 24,
     bold: true,
     color: theme.primary.replace('#', ''),
   });
@@ -423,35 +504,38 @@ function addSummarySlide(pptx, employee, assets, theme) {
   }));
 
   slide.addText(textRuns, {
-    x: 0.8,
-    y: 1.2,
-    w: 8.2,
-    h: 4.5,
+    x: metrics.sideMargin,
+    y: metrics.topMargin + 0.8,
+    w: metrics.contentWidth,
+    h: layout.height - metrics.topMargin - metrics.bottomMargin - 1,
     lineSpacingMultiple: 1.2,
   });
 }
 
-function addImageSlides(pptx, employee, imageItems, theme) {
+function addImageSlides(pptx, employee, imageItems, theme, layout) {
   if (!imageItems.length) {
     return;
   }
 
+  const metrics = getLayoutGuides(layout);
   imageItems.forEach((image, index) => {
     const slide = pptx.addSlide();
-    slide.background = { color: 'FFFFFF' };
+    slide.background = { color: theme.background.replace('#', '') };
 
     slide.addText(`${employee.name} · 影像资料 ${index + 1}/${imageItems.length}`, {
-      x: 0.5,
-      y: 0.4,
-      fontSize: 24,
+      x: metrics.sideMargin,
+      y: metrics.topMargin,
+      w: metrics.contentWidth,
+      fontSize: layout.orientation === 'portrait' ? 26 : 22,
       bold: true,
       color: theme.primary.replace('#', ''),
     });
 
     slide.addText(image.label, {
-      x: 0.5,
-      y: 1,
-      fontSize: 18,
+      x: metrics.sideMargin,
+      y: metrics.topMargin + 0.6,
+      w: metrics.contentWidth,
+      fontSize: layout.orientation === 'portrait' ? 20 : 18,
       color: theme.secondary.replace('#', ''),
     });
 
@@ -459,30 +543,36 @@ function addImageSlides(pptx, employee, imageItems, theme) {
       ? { data: image.data }
       : { path: image.fullPath };
 
+    const imageTop = metrics.topMargin + 1.1;
+    const maxWidth = metrics.contentWidth;
+    const maxHeight = Math.max(3, layout.height - imageTop - metrics.bottomMargin);
+
     slide.addImage({
       ...imagePayload,
-      x: 0.5,
-      y: 1.5,
-      w: 9,
-      h: 4.7,
-      sizing: { type: 'contain', w: 9, h: 4.7 },
+      x: metrics.sideMargin,
+      y: imageTop,
+      w: maxWidth,
+      h: maxHeight,
+      sizing: { type: 'contain', w: maxWidth, h: maxHeight },
     });
   });
 }
 
-function addDocumentSlide(pptx, employee, attachments, theme) {
+function addDocumentSlide(pptx, employee, attachments, theme, layout) {
   const documents = attachments.filter((item) => item.type !== 'image');
   if (!documents.length) {
     return;
   }
 
   const slide = pptx.addSlide();
-  slide.background = { color: 'FFFFFF' };
+  slide.background = { color: theme.background.replace('#', '') };
 
+  const metrics = getLayoutGuides(layout);
   slide.addText(`${employee.name} · 其他检查附件`, {
-    x: 0.6,
-    y: 0.5,
-    fontSize: 26,
+    x: metrics.sideMargin,
+    y: metrics.topMargin,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 26 : 22,
     bold: true,
     color: theme.primary.replace('#', ''),
   });
@@ -497,15 +587,15 @@ function addDocumentSlide(pptx, employee, attachments, theme) {
   }));
 
   slide.addText(items, {
-    x: 0.8,
-    y: 1.3,
-    w: 8.2,
+    x: metrics.sideMargin,
+    y: metrics.topMargin + 0.8,
+    w: metrics.contentWidth,
     lineSpacingMultiple: 1.3,
   });
 
   slide.addText('注：PDF/其他资料请在 data 目录中查看原文件。', {
-    x: 0.8,
-    y: 4.8,
+    x: metrics.sideMargin,
+    y: layout.height - metrics.bottomMargin,
     fontSize: 14,
     color: theme.neutral.replace('#', ''),
   });
