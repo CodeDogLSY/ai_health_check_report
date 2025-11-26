@@ -1,0 +1,20 @@
+{
+  "name": "health_manage_ai",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "docxtemplater": "^3.67.5",
+    "exceljs": "^4.4.0",
+    "fs-extra": "^11.3.2",
+    "mammoth": "^1.11.0",
+    "officegen": "^0.6.5",
+    "pizzip": "^3.2.0"
+  }
+}
