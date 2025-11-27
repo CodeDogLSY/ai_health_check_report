@@ -298,12 +298,7 @@ async function collectEmployeeAssets(employee, files) {
     summaryFile: summaryFile ? path.join(DATA_DIR, summaryFile) : null,
     summaryText: summaryText || '',
     attachments,
-    stats: {
-      totalFiles: matchingFiles.length,
-      images: attachments.filter((item) => item.type === 'image').length,
-      pdfs: attachments.filter((item) => item.type === 'pdf').length,
-      others: attachments.filter((item) => item.type === 'other').length,
-    },
+    totalFiles: matchingFiles.length,
   };
 }
 
@@ -393,7 +388,7 @@ function addCoverSlide(pptx, employee, assets, theme, layout) {
     color: theme.textDark.replace('#', ''),
   });
 
-  slide.addText(`数据文件：${assets.stats.totalFiles}`, {
+  slide.addText(`数据文件：${assets.totalFiles}`, {
     x: metrics.sideMargin,
     y: heroStartY + 1.5,
     fontSize: layout.orientation === 'portrait' ? 20 : 18,
