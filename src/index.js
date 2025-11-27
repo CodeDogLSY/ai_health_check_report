@@ -20,6 +20,7 @@ const {
   addDocumentSlide,
   buildReportFileName,
 } = require('./presentation');
+const { insertTemplateSlides } = require('./templateSlides');
 
 /**
  * 主入口：读取员工资料并批量生成 PPT 报告。
@@ -76,6 +77,7 @@ async function main() {
       const outputName = buildReportFileName(employee);
       const outputPath = path.join(OUTPUT_DIR, outputName);
       await pptx.writeFile({ fileName: outputPath });
+      await insertTemplateSlides(templatePath, outputPath);
 
       successReports.push({ employee, outputPath });
       console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`);
