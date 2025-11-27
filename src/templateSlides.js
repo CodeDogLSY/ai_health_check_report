@@ -19,7 +19,7 @@ const REL_TYPES = {
   image: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
 };
 
-async function insertTemplateSlides(templatePath, outputPath) {
+async function insertTemplateSlides(templatePath, outputPath, options = {}) {
   const [templateBuffer, outputBuffer] = await Promise.all([
     fs.readFile(templatePath),
     fs.readFile(outputPath),
@@ -33,7 +33,7 @@ async function insertTemplateSlides(templatePath, outputPath) {
     { templateSlide: 4, position: 'end' },
   ];
 
-  const state = initializeState(outputZip);
+  const state = initializeState(outputZip, options);
 
   for (const config of slidesToCopy) {
     copyTemplateSlide({
@@ -42,6 +42,7 @@ async function insertTemplateSlides(templatePath, outputPath) {
       templateSlideNumber: config.templateSlide,
       position: config.position,
       state,
+      options,
     });
   }
 
@@ -60,7 +61,7 @@ async function insertTemplateSlides(templatePath, outputPath) {
   await fs.writeFile(outputPath, updatedBuffer);
 }
 
-function initializeState(zip) {
+function initializeState(zip, options) {
   const presentationXml = zip.file('ppt/presentation.xml');
   const presentationRels = zip.file('ppt/_rels/presentation.xml.rels');
   const contentTypes = zip.file('[Content_Types].xml');
@@ -107,6 +108,7 @@ function initializeState(zip) {
     newSlides: [],
     newMasters: new Map(),
     newMastersList: [],
+    options,
   };
 }
 
@@ -126,7 +128,7 @@ function getNextNumber(files, regex) {
   return Math.max(...numbers) + 1;
 }
 
-function copyTemplateSlide({ templateZip, outputZip, templateSlideNumber, position, state }) {
+function copyTemplateSlide({ templateZip, outputZip, templateSlideNumber, position, state, options }) {
   const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`;
   const templateSlide = templateZip.file(templateSlidePath);
   if (!templateSlide) {
@@ -136,7 +138,13 @@ function copyTemplateSlide({ templateZip, outputZip, templateSlideNumber, positi
 
   const newSlideNumber = state.nextSlideNumber++;
   const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`;
-  outputZip.file(newSlidePath, templateSlide.asText());
+  let slideXml = templateSlide.asText();
+
+  if (position === 'start') {
+    slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date);
+  }
+
+  outputZip.file(newSlidePath, slideXml);
 
   cloneSlideRelationships({
     templateZip,
@@ -638,6 +646,73 @@ function getInitialMediaCounter(zip) {
     })
     .filter((num) => Number.isFinite(num));
   return numbers.length ? Math.max(...numbers) + 1 : 1;
+}
+
+function applyCoverPlaceholders(xml, employee = {}, dateValue = new Date()) {
+  const dateText = formatCnDate(dateValue);
+  const replacements = {
+    姓名: employee.name || '',
+    性别: employee.gender || '',
+    年龄: employee.age || '',
+    日期: dateText,
+    工号: employee.id || '',
+  };
+
+  return replaceTextInSlidePreferred(xml, replacements);
+}
+
+function formatCnDate(dateInput) {
+  const date = dateInput instanceof Date ? dateInput : new Date(dateInput || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}年${month}月${day}日`;
+}
+
+function escapeXmlValue(value) {
+  if (!value) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function replaceTextInSlidePreferred(xmlContent, replacements) {
+  let result = xmlContent;
+  const optionalSpaces = '(?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*';
+
+  for (const [key, value] of Object.entries(replacements)) {
+    if (value === undefined || value === null) continue;
+    const valueStr = String(value);
+    if (!valueStr && key !== '性别' && key !== '年龄') continue;
+
+    const escapedValue = escapeXmlValue(valueStr);
+    const keyPattern = escapeRegex(key);
+
+    const placeholderPattern = new RegExp(`\\{\\{${optionalSpaces}${keyPattern}${optionalSpaces}\\}\\}${optionalSpaces}`, 'gi');
+    result = result.replace(placeholderPattern, (match) => {
+      const suffixMatch = match.match(/((?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*)$/i);
+      const suffix = suffixMatch ? suffixMatch[1] : '';
+      return `${escapedValue}${suffix}`;
+    });
+
+    const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`, 'gi');
+    result = result.replace(bracketPattern, escapedValue);
+
+    const textPattern = new RegExp(`(<a:t[^>]*>)${optionalSpaces}${keyPattern}${optionalSpaces}(</a:t>)`, 'gi');
+    result = result.replace(textPattern, `$1${escapedValue}$2`);
+  }
+
+  return result;
+}
+
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 module.exports = {

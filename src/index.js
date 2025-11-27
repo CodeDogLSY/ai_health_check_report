@@ -77,7 +77,7 @@ async function main() {
       const outputName = buildReportFileName(employee);
       const outputPath = path.join(OUTPUT_DIR, outputName);
       await pptx.writeFile({ fileName: outputPath });
-      await insertTemplateSlides(templatePath, outputPath);
+      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date() });
 
       successReports.push({ employee, outputPath });
       console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`);
