@@ -90,7 +90,7 @@ function addImageSlides (pptx, employee, imageItems, theme, layout) {
     const slide = pptx.addSlide()
     slide.background = { color: theme.background.replace('#', '') }
 
-    slide.addText(`${employee.name} · 影像资料 ${index + 1}/${imageItems.length}`, {
+    slide.addText(image.label, {
       x: metrics.sideMargin,
       y: metrics.topMargin,
       w: metrics.contentWidth,
@@ -99,19 +99,11 @@ function addImageSlides (pptx, employee, imageItems, theme, layout) {
       color: theme.primary.replace('#', ''),
     })
 
-    slide.addText(image.label, {
-      x: metrics.sideMargin,
-      y: metrics.topMargin + 0.6,
-      w: metrics.contentWidth,
-      fontSize: layout.orientation === 'portrait' ? 20 : 18,
-      color: theme.secondary.replace('#', ''),
-    })
-
     const imagePayload = image.data
       ? { data: image.data }
       : { path: image.fullPath }
 
-    const imageTop = metrics.topMargin + 1.1
+    const imageTop = metrics.topMargin + 0.4
     const maxWidth = metrics.contentWidth
     const maxHeight = Math.max(3, layout.height - imageTop - metrics.bottomMargin)
 
