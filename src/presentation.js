@@ -28,68 +28,6 @@ function getLayoutGuides (layout) {
   return { sideMargin, topMargin, bottomMargin, contentWidth }
 }
 
-function addCoverSlide (pptx, employee, assets, theme, layout) {
-  const slide = pptx.addSlide()
-  slide.background = { color: theme.background.replace('#', '') }
-
-  const metrics = getLayoutGuides(layout)
-  const headerHeight = Math.max(0.4, layout.height * 0.04)
-
-  slide.addShape('rect', {
-    x: 0,
-    y: 0,
-    w: layout.width,
-    h: headerHeight,
-    fill: { color: theme.primary.replace('#', '') },
-    line: { color: theme.primary.replace('#', '') },
-  })
-
-  slide.addText('2025 员工体检报告', {
-    x: metrics.sideMargin,
-    y: headerHeight * 0.2,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 24 : 20,
-    color: theme.textLight.replace('#', ''),
-  })
-
-  const heroStartY = headerHeight + metrics.topMargin
-  slide.addText(employee.name, {
-    x: metrics.sideMargin,
-    y: heroStartY,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 48 : 40,
-    color: theme.primary.replace('#', ''),
-    bold: true,
-  })
-
-  slide.addText(`工号：${employee.id}`, {
-    x: metrics.sideMargin,
-    y: heroStartY + 0.9,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 22 : 18,
-    color: theme.textDark.replace('#', ''),
-  })
-
-  slide.addText(`数据文件：${assets.totalFiles}`, {
-    x: metrics.sideMargin,
-    y: heroStartY + 1.5,
-    fontSize: layout.orientation === 'portrait' ? 20 : 18,
-    color: theme.secondary.replace('#', ''),
-  })
-
-  const summaryY = heroStartY + (layout.orientation === 'portrait' ? 2.2 : 1.8)
-  const summaryHeight = Math.max(2, layout.height - summaryY - metrics.bottomMargin)
-  slide.addText(formatSummaryTeaser(assets.summaryText), {
-    x: metrics.sideMargin,
-    y: summaryY,
-    w: metrics.contentWidth,
-    h: summaryHeight,
-    fontSize: 16,
-    color: theme.textDark.replace('#', ''),
-    lineSpacingMultiple: 1.2,
-  })
-}
-
 function addOverviewSlide (pptx, employee, assets, theme, layout) {
   const slide = pptx.addSlide()
   slide.background = { color: 'FFFFFF' }
@@ -337,7 +275,6 @@ function buildReportFileName (employee) {
 
 module.exports = {
   initializePresentation,
-  addCoverSlide,
   addOverviewSlide,
   addSummarySlide,
   addImageSlides,
