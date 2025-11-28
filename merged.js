@@ -42,7 +42,7 @@ const DEFAULT_LAYOUT = {
 }
 
 // ==================== utils.js ====================
-function normalizeName(value) {
+function normalizeName (value) {
   if (!value) return ''
   return String(value)
     .replace(/\.[^.]+$/, '')
@@ -51,16 +51,16 @@ function normalizeName(value) {
     .toLowerCase()
 }
 
-function normalizeText(value) {
+function normalizeText (value) {
   if (value === undefined || value === null) return ''
   return String(value).trim()
 }
 
-function sanitizeForFilename(value) {
+function sanitizeForFilename (value) {
   return value.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '')
 }
 
-function buildAsciiSafeLabel(value) {
+function buildAsciiSafeLabel (value) {
   const sanitized = sanitizeForFilename(value).replace(/[^\x00-\x7F]/g, '')
   if (sanitized) {
     return sanitized
@@ -68,7 +68,7 @@ function buildAsciiSafeLabel(value) {
   return `pdf_${Date.now()}`
 }
 
-function formatDate(date) {
+function formatDate (date) {
   const yyyy = date.getFullYear()
   const mm = String(date.getMonth() + 1).padStart(2, '0')
   const dd = String(date.getDate()).padStart(2, '0')
@@ -77,7 +77,7 @@ function formatDate(date) {
   return `${yyyy}${mm}${dd}_${hh}${mi}`
 }
 
-async function resolveExistingPath(candidates, label) {
+async function resolveExistingPath (candidates, label) {
   for (const candidate of candidates) {
     const fullPath = path.join(ROOT, candidate)
     if (await fs.pathExists(fullPath)) {
@@ -94,7 +94,7 @@ async function resolveExistingPath(candidates, label) {
 /**
  * 从 PPT 模板中提取主题配色，找不到则返回默认主题。
  */
-async function loadThemeColors(templatePath) {
+async function loadThemeColors (templatePath) {
   if (!(await fs.pathExists(templatePath))) {
     console.warn('⚠️ 未找到模板文件，使用默认颜色。')
     return DEFAULT_THEME
@@ -142,7 +142,7 @@ async function loadThemeColors(templatePath) {
 /**
  * 解析 PPT 模板的宽高布局信息。
  */
-async function loadTemplateLayout(templatePath) {
+async function loadTemplateLayout (templatePath) {
   const fallback = { ...DEFAULT_LAYOUT }
 
   if (!(await fs.pathExists(templatePath))) {
@@ -186,7 +186,7 @@ async function loadTemplateLayout(templatePath) {
 /**
  * 加载 Excel 员工表，并抽取姓名与工号。
  */
-async function loadEmployees(sheetPath) {
+async function loadEmployees (sheetPath) {
   if (!(await fs.pathExists(sheetPath))) {
     throw new Error(`未找到员工表：${sheetPath}`)
   }
@@ -226,7 +226,7 @@ async function loadEmployees(sheetPath) {
   return employees
 }
 
-function extractHex(xml, tag) {
+function extractHex (xml, tag) {
   const srgbRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr[^>]*?val="([0-9A-F]{6})"`, 'i')
   const sysRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*?lastClr="([0-9A-F]{6})"`, 'i')
 
@@ -243,7 +243,7 @@ function extractHex(xml, tag) {
   return null
 }
 
-function buildColor(value, fallback) {
+function buildColor (value, fallback) {
   if (!value) {
     return fallback
   }
@@ -1626,13 +1626,13 @@ async function main () {
       const outputName = buildReportFileName(employee)
       const outputPath = path.join(OUTPUT_DIR, outputName)
       await pptx.writeFile({ fileName: outputPath })
-      
+
       // 为每个影像资料复制模板第二页
       const imageItems = await buildImageItems(assetInfo, employee)
       if (imageItems.length > 0) {
         await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
       }
-      
+
       await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
 
       successReports.push({ employee, outputPath })
@@ -1662,4 +1662,4 @@ async function main () {
 main().catch((error) => {
   console.error('❌ 生成失败：', error)
   process.exitCode = 1
-});
+})
