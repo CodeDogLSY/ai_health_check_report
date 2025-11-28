@@ -1,17 +1,18 @@
-const path = require('path')
+/**
+ * 完全基于模板 PPT（PizZip）进行复制 / 替换 / 注入，不使用 PptxGenJS
+ */
+
 const fs = require('fs-extra')
-const ExcelJS = require('exceljs')
+const path = require('path')
 const PizZip = require('pizzip')
-const PptxGenJS = require('pptxgenjs')
 const mammoth = require('mammoth')
 const { fromPath: pdfFromPath } = require('pdf2pic')
-const { createCanvas } = require('canvas')
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js')
+const { createCanvas } = require('canvas')
 const crypto = require('crypto')
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
-// ==================== config.js ====================
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
 const OUTPUT_DIR = path.join(ROOT, 'output')
@@ -25,1273 +26,116 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp'])
 const PDF_EXTENSIONS = new Set(['.pdf'])
 const EMU_PER_INCH = 914400
 
-const DEFAULT_THEME = {
-  primary: '#4472C4',
-  secondary: '#ED7D31',
-  neutral: '#A5A5A5',
-  highlight: '#FFC000',
-  textDark: '#000000',
-  textLight: '#FFFFFF',
-  background: '#F7F9FC',
-}
+const ExcelJS = require('exceljs')
 
-const DEFAULT_LAYOUT = {
-  width: 10,
-  height: 5.625,
-  orientation: 'landscape',
-}
-
-// ==================== utils.js ====================
-function normalizeName(value) {
-  if (!value) return ''
-  return String(value)
-    .replace(/\.[^.]+$/, '')
-    .replace(/[-_].*$/, '')
-    .replace(/\s+/g, '')
-    .toLowerCase()
-}
-
-function normalizeText(value) {
-  if (value === undefined || value === null) return ''
-  return String(value).trim()
-}
-
-function sanitizeForFilename(value) {
-  return value.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '')
-}
-
-function buildAsciiSafeLabel(value) {
-  const sanitized = sanitizeForFilename(value).replace(/[^\x00-\x7F]/g, '')
-  if (sanitized) {
-    return sanitized
-  }
-  return `pdf_${Date.now()}`
-}
-
-function formatDate(date) {
-  const yyyy = date.getFullYear()
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  const dd = String(date.getDate()).padStart(2, '0')
-  const hh = String(date.getHours()).padStart(2, '0')
-  const mi = String(date.getMinutes()).padStart(2, '0')
-  return `${yyyy}${mm}${dd}_${hh}${mi}`
-}
-
-async function resolveExistingPath(candidates, label) {
-  for (const candidate of candidates) {
-    const fullPath = path.join(ROOT, candidate)
-    if (await fs.pathExists(fullPath)) {
-      if (candidate !== candidates[0]) {
-        console.warn(`ℹ️ ${label}使用备用路径：${candidate}`)
-      }
-      return fullPath
-    }
-  }
-  throw new Error(`${label}缺失，请确认以下文件之一存在：${candidates.join(', ')}`)
-}
-
-// ==================== loaders.js ====================
-/**
- * 从 PPT 模板中提取主题配色，找不到则返回默认主题。
- */
-async function loadThemeColors(templatePath) {
-  if (!(await fs.pathExists(templatePath))) {
-    console.warn('⚠️ 未找到模板文件，使用默认颜色。')
-    return DEFAULT_THEME
-  }
-
-  try {
-    const buffer = await fs.readFile(templatePath)
-    const zip = new PizZip(buffer)
-    const themeFile = zip.file('ppt/theme/theme1.xml')
-
-    if (!themeFile) {
-      return DEFAULT_THEME
-    }
-
-    const xml = themeFile.asText()
-    const colors = {
-      accent1: extractHex(xml, 'accent1'),
-      accent2: extractHex(xml, 'accent2'),
-      accent3: extractHex(xml, 'accent3'),
-      accent4: extractHex(xml, 'accent4'),
-      accent5: extractHex(xml, 'accent5'),
-      accent6: extractHex(xml, 'accent6'),
-      dk1: extractHex(xml, 'dk1'),
-      lt1: extractHex(xml, 'lt1'),
-      lt2: extractHex(xml, 'lt2'),
-    }
-
-    return {
-      primary: buildColor(colors.accent1, DEFAULT_THEME.primary),
-      secondary: buildColor(colors.accent2, DEFAULT_THEME.secondary),
-      neutral: buildColor(colors.accent3, DEFAULT_THEME.neutral),
-      highlight: buildColor(colors.accent4, DEFAULT_THEME.highlight),
-      accent5: buildColor(colors.accent5, '#5B9BD5'),
-      accent6: buildColor(colors.accent6, '#70AD47'),
-      textDark: buildColor(colors.dk1, DEFAULT_THEME.textDark),
-      textLight: buildColor(colors.lt1, DEFAULT_THEME.textLight),
-      background: buildColor(colors.lt2, DEFAULT_THEME.background),
-    }
-  } catch (error) {
-    console.warn(`⚠️ 读取模板主题失败，将使用默认颜色。原因：${error.message}`)
-    return DEFAULT_THEME
-  }
-}
-
-/**
- * 解析 PPT 模板的宽高布局信息。
- */
-async function loadTemplateLayout(templatePath) {
-  const fallback = { ...DEFAULT_LAYOUT }
-
-  if (!(await fs.pathExists(templatePath))) {
-    return fallback
-  }
-
-  try {
-    const buffer = await fs.readFile(templatePath)
-    const zip = new PizZip(buffer)
-    const presentationFile = zip.file('ppt/presentation.xml')
-
-    if (!presentationFile) {
-      return fallback
-    }
-
-    const xml = presentationFile.asText()
-    const sizeMatch = xml.match(/<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i)
-
-    if (!sizeMatch) {
-      return fallback
-    }
-
-    const widthEmu = parseInt(sizeMatch[1], 10)
-    const heightEmu = parseInt(sizeMatch[2], 10)
-
-    if (Number.isNaN(widthEmu) || Number.isNaN(heightEmu)) {
-      return fallback
-    }
-
-    const width = Number((widthEmu / EMU_PER_INCH).toFixed(3))
-    const height = Number((heightEmu / EMU_PER_INCH).toFixed(3))
-    const orientation = width >= height ? 'landscape' : 'portrait'
-
-    return { width, height, orientation }
-  } catch (error) {
-    console.warn(`⚠️ 模板布局解析失败，将使用默认 16:9 布局。原因：${error.message}`)
-    return fallback
-  }
-}
-
-/**
- * 加载 Excel 员工表，并抽取姓名与工号。
- */
-async function loadEmployees(sheetPath) {
-  if (!(await fs.pathExists(sheetPath))) {
-    throw new Error(`未找到员工表：${sheetPath}`)
-  }
+async function loadEmployeesFromExcel () {
+  const excelPath = await resolveExistingPath(
+    EMPLOYEE_SHEET_CANDIDATES,
+    '员工表'
+  )
 
   const workbook = new ExcelJS.Workbook()
-  await workbook.xlsx.readFile(sheetPath)
-  const worksheet = workbook.worksheets[0]
+  await workbook.xlsx.readFile(excelPath)
 
-  if (!worksheet) {
-    return []
+  const sheet = workbook.worksheets[0]
+  if (!sheet) throw new Error('员工表读取失败：没有找到第一个 Sheet')
+
+  // 读取表头 -> 列号映射
+  const headerMap = {}
+  sheet.getRow(1).eachCell((cell, col) => {
+    headerMap[cell.value] = col
+  })
+
+  function col (name) {
+    return headerMap[name]
   }
 
-  const headerRow = worksheet.getRow(1)
-  const headers = headerRow.values.map((value) => (typeof value === 'string' ? value.trim() : value))
-
   const employees = []
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return
+  sheet.eachRow((row, rowIndex) => {
+    if (rowIndex === 1) return
 
-    const record = {}
-    row.values.forEach((cell, cellIndex) => {
-      const header = headers[cellIndex]
-      if (!header || typeof header !== 'string') return
-      record[header] = typeof cell === 'string' ? cell.trim() : cell
-    })
-
-    const name = normalizeText(record['姓名'] || record['name'])
-    if (!name) return
+    const name = row.getCell(col('姓名')).value || ''
+    if (name === null || name === undefined || name === '') return
 
     employees.push({
-      name,
-      id: normalizeText(record['工号'] || record['员工工号'] || record['编号']) || '未知',
-      raw: record,
+      name: String(name).trim(),
+      id: String(row.getCell(col('工号')).value || '').trim(),
+      gender: String(row.getCell(col('性别')).value || '').trim(),
+      age: String(row.getCell(col('年龄')).value || '').trim(),
+      summaryPath: null, // 会在附件扫描时自动匹配员工总结 docx
     })
   })
 
   return employees
 }
 
-function extractHex(xml, tag) {
-  const srgbRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr[^>]*?val="([0-9A-F]{6})"`, 'i')
-  const sysRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*?lastClr="([0-9A-F]{6})"`, 'i')
 
-  const srgbMatch = xml.match(srgbRegex)
-  if (srgbMatch) {
-    return srgbMatch[1]
+// helper: find template
+async function resolveExistingPath (candidates, label) {
+  for (const candidate of candidates) {
+    const fullPath = path.join(ROOT, candidate)
+    if (await fs.pathExists(fullPath)) {
+      if (candidate !== candidates[0]) {
+        console.warn(`ℹ️ ${label} 使用备用路径：${candidate}`)
+      }
+      return fullPath
+    }
   }
-
-  const sysMatch = xml.match(sysRegex)
-  if (sysMatch) {
-    return sysMatch[1]
-  }
-
-  return null
+  throw new Error(`${label} 缺失，请确认以下文件之一存在：${candidates.join(', ')}`)
 }
 
-function buildColor(value, fallback) {
-  if (!value) {
-    return fallback
-  }
-  return `#${value.toUpperCase()}`
+// ---------- xml/text helpers ----------
+function escapeXmlValue (value) {
+  if (!value) return ''
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
 }
 
-// ==================== assets.js ====================
-/**
- * 读取数据目录，若不存在则返回空数组。
- */
-async function safeReadDir (dir) {
-  if (!(await fs.pathExists(dir))) {
-    console.warn(`⚠️ 数据目录不存在：${dir}`)
-    return []
-  }
-  return fs.readdir(dir)
+function escapeRegex (str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /**
- * 为单个员工收集所有匹配的资料文件。
+ * 替换 slide XML 中的占位文本（只在 <a:t> 内替换，尽量不破坏结构）
  */
-async function collectEmployeeAssets (employee, files) {
-  const normalized = normalizeName(employee.name)
-  const matchingFiles = files.filter((file) => normalizeName(file) === normalized)
-
-  const summaryFile = matchingFiles.find(
-    (file) => file.includes('总结') && path.extname(file).toLowerCase() === '.docx',
-  )
-  const summaryText = summaryFile
-    ? await extractSummaryText(path.join(DATA_DIR, summaryFile))
-    : ''
-
-  const attachments = matchingFiles
-    .filter((file) => file !== summaryFile)
-    .map((file) => {
-      const ext = path.extname(file).toLowerCase()
-      const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other'
-      const label = buildAttachmentLabel(file)
-
-      // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
-      let priority = 99 // 默认优先级
-      if (file.toLowerCase().includes('inbody')) {
-        priority = 1
-      } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
-        priority = 2
-      } else if (file.toLowerCase().includes('血检')) {
-        priority = 3
-      } else if (file.toLowerCase().includes('心电图')) {
-        priority = 4
-      } else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
-        priority = 5
-      }
-
-      return {
-        fileName: file,
-        fullPath: path.join(DATA_DIR, file),
-        label,
-        type,
-        ext,
-        priority,
-      }
-    })
-    .sort((a, b) => a.priority - b.priority)
-
-  return {
-    employee,
-    summaryFile: summaryFile ? path.join(DATA_DIR, summaryFile) : null,
-    summaryText: summaryText || '',
-    attachments,
-    totalFiles: matchingFiles.length,
-  }
-}
-
-async function extractSummaryText (filePath) {
-  try {
-    const { value } = await mammoth.extractRawText({ path: filePath })
-    return value
-      .split('\n')
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .join('\n')
-  } catch (error) {
-    console.warn(`⚠️ 无法读取AI总结：${filePath}，原因：${error.message}`)
-    return ''
-  }
-}
-
-function buildAttachmentLabel (fileName) {
-  const base = path.basename(fileName, path.extname(fileName))
-  const parts = base.split(/[-_]/)
-  return parts.slice(1).join('-') || '附件'
-}
-
-/**
- * 将图片和 PDF（转换为图片）统筹为 PPT 可用素材。
- */
-async function buildImageItems (assetInfo, employee) {
-  const imageItems = []
-
-  // 按照附件的优先级顺序处理每个附件
-  for (const attachment of assetInfo.attachments) {
-    if (attachment.type === 'image') {
-      // 图片类型直接添加
-      imageItems.push({
-        label: attachment.label,
-        fullPath: attachment.fullPath,
-      })
-    } else if (attachment.type === 'pdf') {
-      // PDF类型转换为图片后添加
-      const converted = await convertPdfAttachment(attachment, employee)
-      imageItems.push(...converted)
-    }
-  }
-
-  return imageItems
-}
-
-async function convertPdfAttachment (pdfAttachment, employee) {
-  let tempPdfPath = ''
-  try {
-    const safeLabel = buildAsciiSafeLabel(`${employee.id}_${employee.name}_${pdfAttachment.label}`)
-    const tempPdfName = `${crypto.randomUUID()}.pdf`
-    tempPdfPath = path.join(PDF_TEMP_DIR, tempPdfName)
-    await fs.ensureDir(PDF_TEMP_DIR)
-    await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
-
-    const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
-    if (pdfImgPages.length) {
-      return pdfImgPages
-    }
-
-    return convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
-  } catch (error) {
-    console.warn(`⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`)
-    return []
-  } finally {
-    if (tempPdfPath) {
-      await fs.remove(tempPdfPath).catch(() => { })
-    }
-  }
-}
-
-async function convertWithPdfRenderer (pdfPath, attachment) {
-  try {
-    const pdfBuffer = await fs.readFile(pdfPath)
-    const pdfData = new Uint8Array(pdfBuffer)
-    const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
-    const pages = []
-
-    for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
-      const page = await pdfDoc.getPage(pageNumber)
-      const viewport = page.getViewport({ scale: 2 })
-      const canvas = createCanvas(viewport.width, viewport.height)
-      const context = canvas.getContext('2d')
-
-      await page.render({ canvasContext: context, viewport }).promise
-      const imageBuffer = canvas.toBuffer('image/png')
-      pages.push({
-        label: `${attachment.label} 第${pageNumber}页`,
-        data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
-      })
-    }
-
-    return pages
-  } catch (error) {
-    console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
-    return []
-  }
-}
-
-async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
-  try {
-    await fs.ensureDir(PDF_IMAGE_DIR)
-    const convert = pdfFromPath(pdfPath, {
-      density: 144,
-      format: 'png',
-      width: 1200,
-      height: 800,
-      saveFilename: safeLabel,
-      savePath: PDF_IMAGE_DIR,
-    })
-
-    const pages = await convert.bulk(-1, { responseType: 'base64' })
-    return pages.map((pageResult, idx) => ({
-      label: `${attachment.label} 第${pageResult.page || idx + 1}页`,
-      data: `data:image/png;base64,${pageResult.base64}`,
-    }))
-  } catch (error) {
-    console.warn(`⚠️ pdf2pic 转换失败（${attachment.fileName}）：${error.message}`)
-    return []
-  }
-}
-
-// ==================== presentation.js ====================
-/**
- * 初始化 PPT 文档及基础元数据。
- */
-function initializePresentation (layout) {
-  const pptx = new PptxGenJS()
-  const layoutName = `TEMPLATE_${layout.width}x${layout.height}`
-  pptx.defineLayout({
-    name: layoutName,
-    width: layout.width,
-    height: layout.height,
-  })
-  pptx.layout = layoutName
-  pptx.author = 'Health Manage AI'
-  pptx.company = 'Health Manage AI'
-  pptx.subject = '员工体检报告'
-  pptx.title = '2025 员工体检报告'
-  return pptx
-}
-
-function getLayoutGuides (layout) {
-  const sideMargin = Number((layout.width * 0.08).toFixed(3))
-  const topMargin = Number((layout.height * 0.05).toFixed(3))
-  const bottomMargin = Number((layout.height * 0.06).toFixed(3))
-  const contentWidth = Number((layout.width - sideMargin * 2).toFixed(3))
-  return { sideMargin, topMargin, bottomMargin, contentWidth }
-}
-
-
-
-/**
- * 添加体检总结幻灯片
- * @param {Object} pptx - PptxGenJS 实例
- * @param {Object} employee - 员工信息
- * @param {Object} assets - 员工资产信息
- * @param {Object} theme - 主题颜色
- * @param {Object} layout - 布局信息
- */
-function addSummarySlide (pptx, employee, assets, theme, layout) {
-  const slide = pptx.addSlide()
-  slide.background = { color: theme.background.replace('#', '') }
-
-  const metrics = getLayoutGuides(layout)
-  slide.addText(`${employee.name} · 体检总结`, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 28 : 24,
-    bold: true,
-    color: theme.primary.replace('#', ''),
-  })
-
-  const summary = assets.summaryText || '暂无总结，请补充。'
-  const paragraphs = chunkText(summary, 120)
-  const textRuns = paragraphs.map((paragraph) => ({
-    text: paragraph,
-    options: {
-      bullet: true,
-      color: theme.textDark.replace('#', ''),
-      fontSize: 18,
-    },
-  }))
-
-  slide.addText(textRuns, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin + 0.8,
-    w: metrics.contentWidth,
-    h: layout.height - metrics.topMargin - metrics.bottomMargin - 1,
-    lineSpacingMultiple: 1.2,
-  })
-}
-
-/**
- * 添加影像资料幻灯片
- * @param {Object} pptx - PptxGenJS 实例
- * @param {Object} employee - 员工信息
- * @param {Array} imageItems - 影像资料列表
- * @param {Object} theme - 主题颜色
- * @param {Object} layout - 布局信息
- * @param {string} templatePath - 模板文件路径
- */
-async function addImageSlides (pptx, employee, imageItems, theme, layout, templatePath) {
-  if (!imageItems.length) {
-    return
-  }
-
-  // 读取模板文件，获取第二页幻灯片内容
-  let templateSlideXml = null
-  if (await fs.pathExists(templatePath)) {
-    try {
-      const buffer = await fs.readFile(templatePath)
-      const templateZip = new PizZip(buffer)
-      const templateSlidePath = 'ppt/slides/slide2.xml'
-      const templateSlide = templateZip.file(templateSlidePath)
-      if (templateSlide) {
-        templateSlideXml = templateSlide.asText()
-      }
-    } catch (error) {
-      console.warn('⚠️ 读取模板第二页失败，将使用默认样式：', error.message)
-    }
-  }
-
-  const metrics = getLayoutGuides(layout)
-  for (const image of imageItems) {
-    let slide
-
-    if (templateSlideXml) {
-      // 基于模板第二页创建幻灯片
-      slide = pptx.addSlide()
-      // 由于 PptxGenJS 不直接支持从 XML 创建幻灯片，我们仍使用原有方式创建
-      // 但可以保留模板的背景和布局风格
-      slide.background = { color: theme.background.replace('#', '') }
-    } else {
-      // 使用原有方式创建幻灯片
-      slide = pptx.addSlide()
-      slide.background = { color: theme.background.replace('#', '') }
-    }
-
-    slide.addText(image.label, {
-      x: metrics.sideMargin,
-      y: metrics.topMargin,
-      w: metrics.contentWidth,
-      fontSize: layout.orientation === 'portrait' ? 26 : 22,
-      bold: true,
-      color: theme.primary.replace('#', ''),
-    })
-
-    const imagePayload = image.data
-      ? { data: image.data }
-      : { path: image.fullPath }
-
-    const imageTop = metrics.topMargin + 0.4
-    const maxWidth = metrics.contentWidth
-    const maxHeight = Math.max(3, layout.height - imageTop - metrics.bottomMargin)
-
-    slide.addImage({
-      ...imagePayload,
-      x: metrics.sideMargin,
-      y: imageTop,
-      w: maxWidth,
-      h: maxHeight,
-      sizing: { type: 'contain', w: maxWidth, h: maxHeight },
-    })
-  }
-}
-
-function chunkText (text, chunkSize) {
-  if (!text) return []
-  const paragraphs = text.split('\n').filter(Boolean)
-  const chunks = []
-
-  paragraphs.forEach((paragraph) => {
-    if (paragraph.length <= chunkSize) {
-      chunks.push(paragraph)
-    } else {
-      for (let i = 0; i < paragraph.length; i += chunkSize) {
-        chunks.push(paragraph.slice(i, i + chunkSize))
-      }
-    }
-  })
-
-  return chunks.length ? chunks : ['暂无内容']
-}
-
-function buildReportFileName (employee) {
-  const safeName = sanitizeForFilename(`${employee.name}_${employee.id}`)
-  return `员工体检报告_${safeName}_${formatDate(new Date())}.pptx`
-}
-
-// ==================== templateSlides.js ====================
-const CONTENT_TYPES = {
-  slide: 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml',
-  slideLayout: 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
-  slideMaster: 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
-  theme: 'application/vnd.openxmlformats-officedocument.theme+xml',
-}
-
-const REL_TYPES = {
-  slide: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide',
-  slideLayout: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout',
-  slideMaster: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster',
-  theme: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme',
-  image: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
-}
-
-async function insertTemplateSlides (templatePath, outputPath, options = {}) {
-  const [templateBuffer, outputBuffer] = await Promise.all([
-    fs.readFile(templatePath),
-    fs.readFile(outputPath),
-  ])
-
-  const templateZip = new PizZip(templateBuffer)
-  const outputZip = new PizZip(outputBuffer)
-
-  const slidesToCopy = [
-    { templateSlide: 1, position: 'start' },
-    { templateSlide: 3, position: 'end' },
-    { templateSlide: 4, position: 'end' },
-  ]
-
-  const state = initializeState(outputZip, options)
-
-  for (const config of slidesToCopy) {
-    copyTemplateSlide({
-      templateZip,
-      outputZip,
-      templateSlideNumber: config.templateSlide,
-      position: config.position,
-      state,
-      options,
-    })
-  }
-
-  if (!state.newSlides.length) {
-    return
-  }
-
-  updatePresentationDocuments(outputZip, state)
-
-  const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  })
-
-  await fs.writeFile(outputPath, updatedBuffer)
-}
-
-function initializeState (zip, options) {
-  const presentationXml = zip.file('ppt/presentation.xml')
-  const presentationRels = zip.file('ppt/_rels/presentation.xml.rels')
-  const contentTypes = zip.file('[Content_Types].xml')
-
-  if (!presentationXml || !presentationRels || !contentTypes) {
-    throw new Error('目标 PPT 结构不完整，缺少 presentation 元数据')
-  }
-
-  const presContent = presentationXml.asText()
-  const presRelsContent = presentationRels.asText()
-
-  // 收集所有已存在的slideId
-  const slideIdMatches = [...presContent.matchAll(/<p:sldId[^>]*id="(\d+)"/g)]
-  const existingSlideIds = new Set(
-    slideIdMatches.map((m) => parseInt(m[1], 10))
-  )
-
-  // 收集所有已存在的relId
-  const relIdMatches = [...presRelsContent.matchAll(/Id="rId(\d+)"/g)]
-  const existingRelIds = new Set(
-    relIdMatches.map((m) => parseInt(m[1], 10))
-  )
-
-  // 收集所有已存在的masterId
-  const masterIdMatches = [...presContent.matchAll(/<p:sldMasterId[^>]*id="(\d+)"/g)]
-  const existingMasterIds = new Set(
-    masterIdMatches.map((m) => parseInt(m[1], 10))
-  )
-
-  const slideFiles = zip.file(/^ppt\/slides\/slide\d+\.xml$/i)
-  const layoutFiles = zip.file(/^ppt\/slideLayouts\/slideLayout\d+\.xml$/i)
-  const masterFiles = zip.file(/^ppt\/slideMasters\/slideMaster\d+\.xml$/i)
-  const themeFiles = zip.file(/^ppt\/theme\/theme\d+\.xml$/i)
-
-  // 确保nextSlideId > 256且不重复
-  let nextSlideId = 256
-  while (existingSlideIds.has(nextSlideId)) {
-    nextSlideId++
-  }
-
-  // 确保nextRelId不重复
-  let nextRelId = 10
-  while (existingRelIds.has(nextRelId)) {
-    nextRelId++
-  }
-
-  // 确保nextMasterId不重复
-  let nextMasterId = 100
-  while (existingMasterIds.has(nextMasterId)) {
-    nextMasterId++
-  }
-
-  return {
-    presentationXml,
-    presContent,
-    presentationRels,
-    presRelsContent,
-    contentTypes,
-    contentTypesContent: contentTypes.asText(),
-    nextSlideNumber: getNextNumber(slideFiles, /slide(\d+)\.xml/i),
-    nextSlideId,
-    nextRelId,
-    nextLayoutNumber: getNextNumber(layoutFiles, /slideLayout(\d+)\.xml/i),
-    nextMasterNumber: getNextNumber(masterFiles, /slideMaster(\d+)\.xml/i),
-    nextThemeNumber: getNextNumber(themeFiles, /theme(\d+)\.xml/i),
-    nextMasterId,
-    mediaCounter: getInitialMediaCounter(zip),
-    layoutMap: new Map(),
-    masterMap: new Map(),
-    themeMap: new Map(),
-    mediaMap: new Map(),
-    newSlides: [],
-    newMasters: new Map(),
-    newMastersList: [],
-    options,
-    // 保存已存在的ID集合，用于后续检查
-    existingSlideIds,
-    existingRelIds,
-    existingMasterIds,
-  }
-}
-
-function getNextNumber (files, regex) {
-  if (!files || !files.length) {
-    return 1
-  }
-  const numbers = files
-    .map((file) => {
-      const match = file.name.match(regex)
-      return match ? parseInt(match[1], 10) : 0
-    })
-    .filter((num) => Number.isFinite(num))
-  if (!numbers.length) {
-    return 1
-  }
-  return Math.max(...numbers) + 1
-}
-
-function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, position, state, options }) {
-  const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
-  const templateSlide = templateZip.file(templateSlidePath)
-  if (!templateSlide) {
-    console.warn(`⚠️ 模板缺少第${templateSlideNumber}页，跳过注入`)
-    return
-  }
-
-  const newSlideNumber = state.nextSlideNumber++
-  const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
-  let slideXml = templateSlide.asText()
-
-  if (position === 'start') {
-    slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date)
-  }
-
-  // 如果是模板第三页，替换{{总结}}占位符
-  if (templateSlideNumber === 3 && options.summary) {
-    const replacements = {
-      总结: options.summary,
-    }
-    slideXml = replaceTextInSlidePreferred(slideXml, replacements)
-  }
-
-  outputZip.file(newSlidePath, slideXml)
-
-  cloneSlideRelationships({
-    templateZip,
-    outputZip,
-    templateSlideNumber,
-    newSlideNumber,
-    state,
-  })
-
-  ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
-
-  state.newSlides.push({
-    slideNumber: newSlideNumber,
-    position,
-  })
-}
-
-function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber, newSlideNumber, state }) {
-  const relsPath = `ppt/slides/_rels/slide${templateSlideNumber}.xml.rels`
-  const templateRels = templateZip.file(relsPath)
-  const newRelsPath = `ppt/slides/_rels/slide${newSlideNumber}.xml.rels`
-
-  if (!templateRels) {
-    outputZip.file(newRelsPath, buildEmptyRelationships())
-    return
-  }
-
-  const relItems = parseRelationships(templateRels.asText())
-  const updated = relItems.map((rel) => {
-    if (rel.Type === REL_TYPES.slideLayout) {
-      const absolutePath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
-      const layoutInfo = ensureLayoutAssets({
-        templateZip,
-        outputZip,
-        templateLayoutPath: absolutePath,
-        state,
+function replaceTextInSlidePreferred (xmlContent, replacements) {
+  let result = xmlContent
+  const optionalSpaces = '(?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*'
+
+  for (const [key, value] of Object.entries(replacements)) {
+    if (value === undefined || value === null) continue
+    const valueStr = String(value)
+    if (!valueStr && key !== '性别' && key !== '年龄') continue
+
+    const escapedValue = escapeXmlValue(valueStr)
+    const keyPattern = escapeRegex(key)
+
+    const textRunPattern = /(<a:t[^>]*>)([\s\S]*?)(<\/a:t>)/gi
+    result = result.replace(textRunPattern, (match, openTag, content, closeTag) => {
+      let updatedContent = content
+
+      const placeholderPattern = new RegExp(`\\{\\{${optionalSpaces}${keyPattern}${optionalSpaces}\\}\\}`, 'gi')
+      updatedContent = updatedContent.replace(placeholderPattern, (phMatch) => {
+        const suffixMatch = phMatch.match(/((?:\s|\u00A0|&nbsp;|&#160;|&#xA0;)*)$/i)
+        const suffix = suffixMatch ? suffixMatch[1] : ''
+        return `${escapedValue}${suffix}`
       })
 
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, layoutInfo.newPath)
-      return rel
-    }
+      const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`, 'gi')
+      updatedContent = updatedContent.replace(bracketPattern, escapedValue)
 
-    if (rel.Type === REL_TYPES.image) {
-      // 检查是否有新的图片需要替换（针对模板第二页）
-      if (templateSlideNumber === 2) {
-        // 查找当前幻灯片对应的图片映射
-        const slideImageKey = `${newSlideNumber}_`
-        let newMediaTarget = null
+      const directPattern = new RegExp(`${optionalSpaces}${keyPattern}${optionalSpaces}`, 'gi')
+      updatedContent = updatedContent.replace(directPattern, escapedValue)
 
-        // 查找当前幻灯片的图片映射
-        for (const [key, value] of state.mediaMap.entries()) {
-          if (key.startsWith(slideImageKey)) {
-            newMediaTarget = value
-            break
-          }
-        }
-
-        // 如果没有找到带slideNumber的映射，尝试查找普通映射
-        if (!newMediaTarget) {
-          // 尝试使用最新添加的图片
-          const mediaValues = Array.from(state.mediaMap.values())
-          if (mediaValues.length > 0) {
-            newMediaTarget = mediaValues[mediaValues.length - 1]
-          }
-        }
-
-        if (newMediaTarget) {
-          // 确保路径是相对于幻灯片的正确相对路径
-          rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
-          return rel
-        }
-      }
-
-      // 如果没有新的图片，使用模板中的图片
-      const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
-      const newMediaTarget = copyMediaFile({
-        templateZip,
-        outputZip,
-        sourcePath: absoluteMediaPath,
-        state,
-      })
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
-      return rel
-    }
-
-    // 其他引用（如 notes）直接复制
-    const absoluteTarget = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
-    const newTarget = copyGenericPart({
-      templateZip,
-      outputZip,
-      sourcePath: absoluteTarget,
-      state,
+      return `${openTag}${updatedContent}${closeTag}`
     })
-    if (newTarget) {
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newTarget)
-    }
-    return rel
-  })
-
-  outputZip.file(newRelsPath, buildRelationshipsXml(updated))
-}
-
-function ensureLayoutAssets ({ templateZip, outputZip, templateLayoutPath, state }) {
-  if (state.layoutMap.has(templateLayoutPath)) {
-    return state.layoutMap.get(templateLayoutPath)
   }
 
-  // 通过解析布局的关系找到对应母版，确保母版先被复制
-  const relsPath = layoutRelationshipsPath(templateLayoutPath)
-  const relFile = templateZip.file(relsPath)
-  if (!relFile) {
-    throw new Error(`模板布局缺少关系文件：${relsPath}`)
-  }
-
-  const relItems = parseRelationships(relFile.asText())
-  const masterRel = relItems.find((rel) => rel.Type === REL_TYPES.slideMaster)
-  if (!masterRel) {
-    throw new Error(`布局文件未关联母版：${templateLayoutPath}`)
-  }
-
-  const masterPath = resolveRelationshipPath(templateLayoutPath, masterRel.Target)
-  ensureMasterAssets({
-    templateZip,
-    outputZip,
-    templateMasterPath: masterPath,
-    state,
-  })
-
-  if (!state.layoutMap.has(templateLayoutPath)) {
-    throw new Error(`复制布局失败：${templateLayoutPath}`)
-  }
-
-  return state.layoutMap.get(templateLayoutPath)
-}
-
-function ensureMasterAssets ({ templateZip, outputZip, templateMasterPath, state }) {
-  if (state.masterMap.has(templateMasterPath)) {
-    return state.masterMap.get(templateMasterPath)
-  }
-
-  const masterFile = templateZip.file(templateMasterPath)
-  if (!masterFile) {
-    throw new Error(`模板缺少母版文件：${templateMasterPath}`)
-  }
-
-  const newMasterNumber = state.nextMasterNumber++
-  const newMasterPath = `ppt/slideMasters/slideMaster${newMasterNumber}.xml`
-  outputZip.file(newMasterPath, masterFile.asText())
-  ensureContentType(state, `/${newMasterPath}`, CONTENT_TYPES.slideMaster)
-
-  const masterRelsPath = masterRelationshipsPath(templateMasterPath)
-  const templateRels = templateZip.file(masterRelsPath)
-  const newMasterRelsPath = masterRelationshipsPath(newMasterPath)
-  let themeInfo = null
-
-  if (templateRels) {
-    const relItems = parseRelationships(templateRels.asText())
-    const updated = relItems.map((rel) => {
-      if (rel.Type === REL_TYPES.theme) {
-        const themePath = resolveRelationshipPath(templateMasterPath, rel.Target)
-        themeInfo = ensureThemeAssets({
-          templateZip,
-          outputZip,
-          templateThemePath: themePath,
-          state,
-        })
-        rel.Target = relativePath(newMasterPath, themeInfo.newPath)
-        return rel
-      }
-
-      if (rel.Type === REL_TYPES.slideLayout) {
-        const layoutPath = resolveRelationshipPath(templateMasterPath, rel.Target)
-        const layoutInfo = copyLayoutFromMaster({
-          templateZip,
-          outputZip,
-          templateLayoutPath: layoutPath,
-          newMasterPath,
-          state,
-        })
-        rel.Target = relativePath(newMasterPath, layoutInfo.newPath)
-        return rel
-      }
-
-      const absolute = resolveRelationshipPath(templateMasterPath, rel.Target)
-      const newTarget = copyGenericPart({
-        templateZip,
-        outputZip,
-        sourcePath: absolute,
-        state,
-      })
-      rel.Target = relativePath(newMasterPath, newTarget)
-      return rel
-    })
-
-    outputZip.file(newMasterRelsPath, buildRelationshipsXml(updated))
-  } else {
-    outputZip.file(newMasterRelsPath, buildEmptyRelationships())
-  }
-
-  const info = {
-    newPath: newMasterPath,
-    themePath: themeInfo ? themeInfo.newPath : null,
-  }
-  state.masterMap.set(templateMasterPath, info)
-  state.newMasters.set(templateMasterPath, info)
-  state.newMastersList.push(info)
-  return info
-}
-
-function copyLayoutFromMaster ({ templateZip, outputZip, templateLayoutPath, newMasterPath, state }) {
-  if (state.layoutMap.has(templateLayoutPath)) {
-    return state.layoutMap.get(templateLayoutPath)
-  }
-
-  const layoutFile = templateZip.file(templateLayoutPath)
-  if (!layoutFile) {
-    throw new Error(`模板缺少布局文件：${templateLayoutPath}`)
-  }
-
-  const newLayoutNumber = state.nextLayoutNumber++
-  const newLayoutPath = `ppt/slideLayouts/slideLayout${newLayoutNumber}.xml`
-  outputZip.file(newLayoutPath, layoutFile.asText())
-  ensureContentType(state, `/${newLayoutPath}`, CONTENT_TYPES.slideLayout)
-
-  const relsPath = layoutRelationshipsPath(templateLayoutPath)
-  const relFile = templateZip.file(relsPath)
-  const newRelsPath = layoutRelationshipsPath(newLayoutPath)
-
-  if (relFile) {
-    const relItems = parseRelationships(relFile.asText())
-    const updated = relItems.map((rel) => {
-      if (rel.Type === REL_TYPES.slideMaster) {
-        rel.Target = relativePath(newLayoutPath, newMasterPath)
-        return rel
-      }
-
-      if (rel.Type === REL_TYPES.image) {
-        const mediaPath = resolveRelationshipPath(templateLayoutPath, rel.Target)
-        const newMediaTarget = copyMediaFile({
-          templateZip,
-          outputZip,
-          sourcePath: mediaPath,
-          state,
-        })
-        rel.Target = relativePath(newLayoutPath, newMediaTarget)
-        return rel
-      }
-
-      const absolute = resolveRelationshipPath(templateLayoutPath, rel.Target)
-      const newTarget = copyGenericPart({
-        templateZip,
-        outputZip,
-        sourcePath: absolute,
-        state,
-      })
-      rel.Target = relativePath(newLayoutPath, newTarget)
-      return rel
-    })
-    outputZip.file(newRelsPath, buildRelationshipsXml(updated))
-  } else {
-    outputZip.file(newRelsPath, buildEmptyRelationships())
-  }
-
-  const info = { newPath: newLayoutPath }
-  state.layoutMap.set(templateLayoutPath, info)
-  return info
-}
-
-function ensureThemeAssets ({ templateZip, outputZip, templateThemePath, state }) {
-  if (state.themeMap.has(templateThemePath)) {
-    return state.themeMap.get(templateThemePath)
-  }
-
-  const themeFile = templateZip.file(templateThemePath)
-  if (!themeFile) {
-    throw new Error(`模板缺少主题文件：${templateThemePath}`)
-  }
-
-  const newThemeNumber = state.nextThemeNumber++
-  const newThemePath = `ppt/theme/theme${newThemeNumber}.xml`
-  outputZip.file(newThemePath, themeFile.asText())
-  ensureContentType(state, `/${newThemePath}`, CONTENT_TYPES.theme)
-
-  const info = { newPath: newThemePath }
-  state.themeMap.set(templateThemePath, info)
-  return info
-}
-
-function copyMediaFile ({ templateZip, outputZip, sourcePath, state }) {
-  // 确保使用一致的key格式，避免重复复制
-  if (state.mediaMap.has(sourcePath)) {
-    return state.mediaMap.get(sourcePath)
-  }
-
-  const file = templateZip.file(sourcePath)
-  if (!file) {
-    throw new Error(`模板缺少资源：${sourcePath}`)
-  }
-
-  const ext = path.extname(sourcePath) || '.bin'
-  const newName = `ppt/media/template_media_${state.mediaCounter++}${ext}`
-  outputZip.file(newName, file.asNodeBuffer())
-
-  // 只使用sourcePath作为key，确保一致性
-  state.mediaMap.set(sourcePath, newName)
-  return newName
-}
-
-function copyGenericPart ({ templateZip, outputZip, sourcePath, state }) {
-  if (!sourcePath.startsWith('ppt/')) {
-    return sourcePath
-  }
-  if (outputZip.file(sourcePath)) {
-    return sourcePath
-  }
-  const part = templateZip.file(sourcePath)
-  if (part) {
-    if (part.options && part.options.binary) {
-      outputZip.file(sourcePath, part.asNodeBuffer())
-    } else {
-      outputZip.file(sourcePath, part.asText())
-    }
-  }
-
-  if (sourcePath.startsWith('ppt/notesSlides/')) {
-    ensureContentType(
-      state,
-      `/${sourcePath}`,
-      'application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml',
-    )
-  }
-  return sourcePath
-}
-
-function ensureContentType (state, partName, contentType) {
-  // 更精确地检查是否已经存在相同的PartName
-  const partNameRegex = new RegExp(`<Override[^>]*PartName="${partName}"[^>]*>`, 'i')
-  if (state.contentTypesContent.match(partNameRegex)) {
-    return
-  }
-  const override = `  <Override PartName="${partName}" ContentType="${contentType}"/>`
-  // 确保找到正确的</Types>标签位置
-  const typesEndIndex = state.contentTypesContent.lastIndexOf('</Types>')
-  if (typesEndIndex === -1) {
-    throw new Error('Content_Types.xml缺少</Types>结束标签')
-  }
-  state.contentTypesContent = state.contentTypesContent.slice(0, typesEndIndex) + `\n${override}\n` + state.contentTypesContent.slice(typesEndIndex)
-}
-
-function updatePresentationDocuments (zip, state) {
-  const slideEntries = extractExistingSlideEntries(state.presContent)
-  const updatedSlideEntries = buildSlideEntries(slideEntries, state)
-  state.presContent = state.presContent.replace(slideEntries.raw, updatedSlideEntries.xml)
-
-  const updatedRels = appendSlideRelationships(state.presRelsContent, state)
-  state.presRelsContent = updatedRels
-
-  const updatedMasters = appendMasterEntries(state.presContent, state)
-  state.presContent = updatedMasters
-
-  // 确保所有新增文件都有正确的content type
-  // 检查并添加所有新增幻灯片的content type
-  for (const slide of state.newSlides) {
-    ensureContentType(state, `/ppt/slides/slide${slide.slideNumber}.xml`, CONTENT_TYPES.slide)
-  }
-
-  // 检查并添加所有新增布局的content type
-  for (const [templatePath, layoutInfo] of state.layoutMap.entries()) {
-    ensureContentType(state, `/${layoutInfo.newPath}`, CONTENT_TYPES.slideLayout)
-  }
-
-  // 检查并添加所有新增母版的content type
-  for (const [templatePath, masterInfo] of state.masterMap.entries()) {
-    ensureContentType(state, `/${masterInfo.newPath}`, CONTENT_TYPES.slideMaster)
-  }
-
-  // 检查并添加所有新增主题的content type
-  for (const [templatePath, themeInfo] of state.themeMap.entries()) {
-    ensureContentType(state, `/${themeInfo.newPath}`, CONTENT_TYPES.theme)
-  }
-
-  // 写入所有更新的文件
-  zip.file('ppt/presentation.xml', state.presContent)
-  zip.file('ppt/_rels/presentation.xml.rels', state.presRelsContent)
-  zip.file('[Content_Types].xml', state.contentTypesContent)
-}
-
-function extractExistingSlideEntries (presContent) {
-  const match = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/) || { raw: '<p:sldIdLst></p:sldIdLst>', inner: '' }
-  return { raw: match[0], inner: match[1] }
-}
-
-function buildSlideEntries (existing, state) {
-  const existingEntries = existing.inner
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-
-  const newSlides = state.newSlides.map((slide) => {
-    // 确保slideId > 256且唯一
-    while (state.existingSlideIds.has(state.nextSlideId) || state.nextSlideId <= 256) {
-      state.nextSlideId++
-    }
-    slide.slideId = state.nextSlideId
-    state.existingSlideIds.add(state.nextSlideId)
-    state.nextSlideId++
-
-    // 确保relId唯一
-    while (state.existingRelIds.has(state.nextRelId)) {
-      state.nextRelId++
-    }
-    slide.relId = `rId${state.nextRelId}`
-    state.existingRelIds.add(state.nextRelId)
-    state.nextRelId++
-
-    return slide
-  })
-
-  const entryFor = (slide) => `    <p:sldId id="${slide.slideId}" r:id="${slide.relId}"/>`
-
-  const startEntries = newSlides.filter((s) => s.position === 'start').map(entryFor)
-  const endEntries = newSlides.filter((s) => s.position === 'end').map(entryFor)
-
-  const xml = `<p:sldIdLst>
-${[...startEntries, ...existingEntries, ...endEntries].join('\n')}
-</p:sldIdLst>`
-
-  return { xml }
-}
-
-function appendSlideRelationships (relsContent, state) {
-  const insertIndex = relsContent.indexOf('</Relationships>')
-  if (insertIndex === -1) {
-    throw new Error('presentation.xml.rels 内容异常')
-  }
-
-  const slideRels = state.newSlides
-    .map(
-      (slide) =>
-        `  <Relationship Id="${slide.relId}" Type="${REL_TYPES.slide}" Target="slides/slide${slide.slideNumber}.xml"/>`,
-    )
-    .join('\n')
-
-  return `${relsContent.slice(0, insertIndex)}${slideRels}\n${relsContent.slice(insertIndex)}`
-}
-
-function appendMasterEntries (presContent, state) {
-  if (!state.newMastersList.length) {
-    return presContent
-  }
-
-  const relsContent = state.presRelsContent
-  const insertIndex = relsContent.indexOf('</Relationships>')
-
-  if (insertIndex === -1) {
-    throw new Error('presentation.xml.rels 缺少 Relationships 结束标签')
-  }
-
-  const masterListMatch = presContent.match(/<p:sldMasterIdLst>([\s\S]*?)<\/p:sldMasterIdLst>/) || { 1: '' }
-  const existingEntries = masterListMatch[1]
-    ? masterListMatch[1]
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-    : []
-
-  const newMasterEntries = []
-  const newMasterRels = []
-
-  for (const info of state.newMastersList) {
-    state.nextMasterId += 1
-    state.nextRelId += 1
-    const relId = `rId${state.nextRelId}`
-    const entry = `    <p:sldMasterId id="${state.nextMasterId}" r:id="${relId}"/>`
-    newMasterEntries.push(entry)
-    newMasterRels.push(
-      `  <Relationship Id="${relId}" Type="${REL_TYPES.slideMaster}" Target="${info.newPath.replace(
-        'ppt/',
-        '',
-      )}"/>`,
-    )
-  }
-
-  const newMasterList = `<p:sldMasterIdLst>
-${[...existingEntries, ...newMasterEntries].join('\n')}
-</p:sldMasterIdLst>`
-
-  let updatedPres = presContent
-  if (masterListMatch[0]) {
-    updatedPres = presContent.replace(masterListMatch[0], newMasterList)
-  } else {
-    updatedPres = presContent.replace(
-      '</p:presentation>',
-      `${newMasterList}\n</p:presentation>`,
-    )
-  }
-
-  state.presRelsContent = `${relsContent.slice(
-    0,
-    insertIndex,
-  )}${newMasterRels.join('\n')}\n${relsContent.slice(insertIndex)}`
-
-  return updatedPres
+  return result
 }
 
 function parseRelationships (xml) {
@@ -1326,38 +170,21 @@ ${items}
 </Relationships>`
 }
 
-function buildEmptyRelationships () {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>`
-}
-
-function resolveRelationshipPath (from, target) {
-  const baseDir = path.posix.dirname(from)
-  return path.posix.normalize(path.posix.join(baseDir, target))
-}
-
-function relativePath (from, to) {
-  const fromDir = path.posix.dirname(from)
-  let relPath = path.posix.relative(fromDir, to)
-
-  // 确保路径使用正斜杠，符合PPTX规范
-  relPath = relPath.replace(/\\/g, '/')
-
-  // 移除所有./前缀
-  relPath = relPath.replace(/^\.\//g, '')
-
-  return relPath
-}
-
-function layoutRelationshipsPath (layoutPath) {
-  const baseName = path.posix.basename(layoutPath)
-  return `ppt/slideLayouts/_rels/${baseName}.rels`
-}
-
-function masterRelationshipsPath (masterPath) {
-  const baseName = path.posix.basename(masterPath)
-  return `ppt/slideMasters/_rels/${baseName}.rels`
+// utilities for numbering
+function getNextNumber (files, regex) {
+  if (!files || !files.length) {
+    return 1
+  }
+  const numbers = files
+    .map((file) => {
+      const match = file.name.match(regex)
+      return match ? parseInt(match[1], 10) : 0
+    })
+    .filter((num) => Number.isFinite(num))
+  if (!numbers.length) {
+    return 1
+  }
+  return Math.max(...numbers) + 1
 }
 
 function getInitialMediaCounter (zip) {
@@ -1374,292 +201,405 @@ function getInitialMediaCounter (zip) {
   return numbers.length ? Math.max(...numbers) + 1 : 1
 }
 
-function applyCoverPlaceholders (xml, employee = {}, dateValue = new Date()) {
-  const dateText = formatCnDate(dateValue)
-  const replacements = {
-    姓名: employee.name || '',
-    性别: employee.gender || '',
-    年龄: employee.age || '',
-    日期: dateText,
-    工号: employee.id || '',
+// ensure override in [Content_Types].xml
+function ensureContentTypeOnce (contentTypesText, partName, contentType) {
+  const partNameRegex = new RegExp(`<Override[^>]*PartName="${escapeRegex(partName)}"[^>]*>`, 'i')
+  if (contentTypesText.match(partNameRegex)) {
+    return contentTypesText
   }
-
-  return replaceTextInSlidePreferred(xml, replacements)
+  const override = `  <Override PartName="${partName}" ContentType="${contentType}"/>`
+  const typesEndIndex = contentTypesText.lastIndexOf('</Types>')
+  if (typesEndIndex === -1) {
+    throw new Error('[Content_Types].xml 缺少 </Types>')
+  }
+  return contentTypesText.slice(0, typesEndIndex) + `\n${override}\n` + contentTypesText.slice(typesEndIndex)
 }
 
-function formatCnDate (dateInput) {
-  const date = dateInput instanceof Date ? dateInput : new Date(dateInput || Date.now())
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}年${month}月${day}日`
+// ---------- asset collection (与之前逻辑兼容，简化版本) ----------
+async function safeReadDir (dir) {
+  if (!(await fs.pathExists(dir))) return []
+  return fs.readdir(dir)
 }
 
-function escapeXmlValue (value) {
+function normalizeName (value) {
   if (!value) return ''
   return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[-_].*$/, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
 }
 
-function replaceTextInSlidePreferred (xmlContent, replacements) {
-  let result = xmlContent
-  const optionalSpaces = '(?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*'
+function buildAttachmentLabel (fileName) {
+  const base = path.basename(fileName, path.extname(fileName))
+  const parts = base.split(/[-_]/)
+  return parts.slice(1).join('-') || base
+}
 
-  for (const [key, value] of Object.entries(replacements)) {
-    if (value === undefined || value === null) continue
-    const valueStr = String(value)
-    if (!valueStr && key !== '性别' && key !== '年龄') continue
+async function buildImageItems (assetInfo, employee) {
+  const items = []
+  for (const att of assetInfo.attachments) {
+    if (att.type === 'image') {
+      items.push({ label: att.label, fullPath: att.fullPath })
+    } else if (att.type === 'pdf') {
+      const converted = await convertPdfAttachment(att, employee)
+      items.push(...converted)
+    }
+  }
+  return items
+}
 
-    const escapedValue = escapeXmlValue(valueStr)
-    const keyPattern = escapeRegex(key)
+async function extractSummaryText (filePath) {
+  try {
+    const { value } = await mammoth.extractRawText({ path: filePath })
+    return value
+      .split('\n')
+      .map((i) => i.trim())
+      .filter(Boolean)
+      .join('\n')
+  } catch (e) {
+    console.warn('无法读取总结：', e.message)
+    return ''
+  }
+}
 
-    // 确保只在<a:t>标签内替换占位符，避免破坏XML结构
-    // 先匹配整个<a:t>标签，然后在其中替换内容
-    const textRunPattern = /(<a:t[^>]*>)([\s\S]*?)(<\/a:t>)/gi
-    result = result.replace(textRunPattern, (match, openTag, content, closeTag) => {
-      let updatedContent = content
+// PDF conversions (reuse earlier logic)
+async function convertPdfAttachment (pdfAttachment, employee) {
+  let tempPdfPath = ''
+  try {
+    const safeLabel = `${employee.id}_${employee.name}_${pdfAttachment.label}`
+    const tempPdfName = `${crypto.randomUUID()}.pdf`
+    tempPdfPath = path.join(PDF_TEMP_DIR, tempPdfName)
+    await fs.ensureDir(PDF_TEMP_DIR)
+    await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
 
-      // 替换{{占位符}}格式
-      const placeholderPattern = new RegExp(`\\{\\{${optionalSpaces}${keyPattern}${optionalSpaces}\\}\}${optionalSpaces}`, 'gi')
-      updatedContent = updatedContent.replace(placeholderPattern, (phMatch) => {
-        const suffixMatch = phMatch.match(/((?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*)$/i)
-        const suffix = suffixMatch ? suffixMatch[1] : ''
-        return `${escapedValue}${suffix}`
+    const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
+    if (pdfImgPages.length) return pdfImgPages
+    return convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+  } catch (e) {
+    console.warn('pdf 转图失败：', e.message)
+    return []
+  } finally {
+    if (tempPdfPath) await fs.remove(tempPdfPath).catch(() => { })
+  }
+}
+
+async function convertWithPdfRenderer (pdfPath, attachment) {
+  try {
+    const pdfBuffer = await fs.readFile(pdfPath)
+    const pdfData = new Uint8Array(pdfBuffer)
+    const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
+    const pages = []
+    for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
+      const page = await pdfDoc.getPage(pageNumber)
+      const viewport = page.getViewport({ scale: 2 })
+      const canvas = createCanvas(viewport.width, viewport.height)
+      const context = canvas.getContext('2d')
+      await page.render({ canvasContext: context, viewport }).promise
+      const imageBuffer = canvas.toBuffer('image/png')
+      pages.push({
+        label: `${attachment.label} 第${pageNumber}页`,
+        data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
       })
-
-      // 替换[占位符]格式
-      const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`, 'gi')
-      updatedContent = updatedContent.replace(bracketPattern, escapedValue)
-
-      // 替换直接文本格式
-      const directPattern = new RegExp(`${optionalSpaces}${keyPattern}${optionalSpaces}`, 'gi')
-      updatedContent = updatedContent.replace(directPattern, escapedValue)
-
-      return `${openTag}${updatedContent}${closeTag}`
-    })
-  }
-
-  return result
-}
-
-function escapeRegex (str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/**
- * 在幻灯片中替换图片占位符
- * @param {string} slideXml - 幻灯片 XML 内容
- * @param {Object} image - 影像资料
- * @param {Object} state - 状态对象
- * @param {PizZip} outputZip - 输出 ZIP 对象
- */
-function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber) {
-  // 保存图片到输出 ZIP
-  let newImagePath
-  if (image.data) {
-    const ext = image.data.match(/data:image\/(\\w+);base64,/)?.[1] || 'png'
-    newImagePath = `ppt/media/image_${state.mediaCounter++}.${ext}`
-    const base64Data = image.data.replace(/^data:image\/\\w+;base64,/, '')
-    const buffer = Buffer.from(base64Data, 'base64')
-    outputZip.file(newImagePath, buffer)
-  } else if (image.fullPath) {
-    const ext = path.extname(image.fullPath) || '.png'
-    newImagePath = `ppt/media/image_${state.mediaCounter++}${ext}`
-    const buffer = fs.readFileSync(image.fullPath)
-    outputZip.file(newImagePath, buffer)
-  }
-
-  // 图片路径映射，使用唯一key
-  if (newImagePath) {
-    // 使用slideNumber作为key的一部分，确保每个幻灯片的图片都有唯一映射
-    const mapKey = `${slideNumber}_${image.data || image.fullPath}`
-    state.mediaMap.set(mapKey, newImagePath)
-    // 同时保存一个简单映射，用于关系文件更新
-    state.mediaMap.set(image.data || image.fullPath, newImagePath)
-  }
-
-  // 更新slideXml中的图片引用
-  // 查找所有图片元素，确保它们有正确的rId
-  // 注意：PPTX中的图片通过<p:blip r:embed="rIdX"/>引用
-  let updatedXml = slideXml
-  const blipRegex = /<a:blip\s+r:embed="([^"]+)"\s*\/>/g
-  let match
-  while ((match = blipRegex.exec(slideXml))) {
-    // 我们不需要修改slideXml中的rId，因为关系文件会处理映射
-    // 但我们需要确保关系文件中的rId指向正确的图片
-  }
-
-  return updatedXml
-}
-
-/**
- * 复制模板第二页幻灯片，并在其上添加文字和图片
- * @param {string} templatePath - 模板文件路径
- * @param {string} outputPath - 输出文件路径
- * @param {Array} imageItems - 影像资料列表
- * @param {Object} employee - 员工信息
- */
-async function copyTemplateSecondPageForImages (templatePath, outputPath, imageItems, employee) {
-  const [templateBuffer, outputBuffer] = await Promise.all([
-    fs.readFile(templatePath),
-    fs.readFile(outputPath),
-  ])
-
-  const templateZip = new PizZip(templateBuffer)
-  const outputZip = new PizZip(outputBuffer)
-
-  const state = initializeState(outputZip, { employee, date: new Date() })
-
-  // 为每个影像资料复制模板第二页
-  for (const image of imageItems) {
-    const templateSlidePath = `ppt/slides/slide2.xml`
-    const templateSlide = templateZip.file(templateSlidePath)
-    if (!templateSlide) {
-      console.warn(`⚠️ 模板缺少第2页，跳过注入`)
-      continue
     }
-
-    const newSlideNumber = state.nextSlideNumber++
-    const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
-    let slideXml = templateSlide.asText()
-
-    // 替换幻灯片中的文本占位符
-    const replacements = {
-      影像标题: image.label,
-      姓名: employee.name || '',
-      工号: employee.id || '',
-    }
-    slideXml = replaceTextInSlidePreferred(slideXml, replacements)
-
-    // 替换幻灯片中的图片占位符，传递slideNumber参数
-    slideXml = replaceImagePlaceholder(slideXml, image, state, outputZip, newSlideNumber)
-
-    outputZip.file(newSlidePath, slideXml)
-
-    cloneSlideRelationships({
-      templateZip,
-      outputZip,
-      templateSlideNumber: 2,
-      newSlideNumber,
-      state,
-    })
-
-    ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
-
-    state.newSlides.push({
-      slideNumber: newSlideNumber,
-      position: 'start',
-    })
+    return pages
+  } catch (e) {
+    console.warn('pdf renderer 失败：', e.message)
+    return []
   }
-
-  if (!state.newSlides.length) {
-    return
-  }
-
-  updatePresentationDocuments(outputZip, state)
-
-  const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  })
-
-  await fs.writeFile(outputPath, updatedBuffer)
 }
 
-// ==================== index.js ====================
-/**
- * 主入口：读取员工资料并批量生成 PPT 报告。
- */
+async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
+  try {
+    await fs.ensureDir(PDF_IMAGE_DIR)
+    const convert = pdfFromPath(pdfPath, {
+      density: 144,
+      format: 'png',
+      width: 1200,
+      height: 800,
+      saveFilename: safeLabel,
+      savePath: PDF_IMAGE_DIR,
+    })
+    const pages = await convert.bulk(-1, { responseType: 'base64' })
+    return pages.map((p) => ({
+      label: `${attachment.label} 第${p.page || '?'}页`,
+      data: `data:image/png;base64,${p.base64}`,
+    }))
+  } catch (e) {
+    console.warn('pdf2pic 失败：', e.message)
+    return []
+  }
+}
+
+// ---------- core: build a report per employee using template as base ----------
 async function main () {
-  // 1) 准备输出目录，避免中途写文件失败。
   await fs.ensureDir(OUTPUT_DIR)
   await fs.ensureDir(PDF_IMAGE_DIR)
   await fs.ensureDir(PDF_TEMP_DIR)
 
-  // 2) 定位模板与员工表，支持备用文件名。
   const templatePath = await resolveExistingPath(TEMPLATE_CANDIDATES, '模板文件')
-  const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表')
+  const templateBuffer = await fs.readFile(templatePath)
 
-  // 3) 读取模板布局、配色以及员工数据。
-  const layout = await loadTemplateLayout(templatePath)
-  const theme = await loadThemeColors(templatePath)
-  const employees = await loadEmployees(sheetPath)
+  console.log('正在读取员工表（Excel）...')
+  const employees = await loadEmployeesFromExcel()
+  console.log(`员工数量：${employees.length}`)
 
-  if (!employees.length) {
-    console.warn('⚠️ 员工表为空，已结束。')
-    return
-  }
 
+  // scan data dir for files
   const availableFiles = await safeReadDir(DATA_DIR)
-  const successReports = []
-  const skippedEmployees = []
 
-  // 4) 针对每位员工构建个性化报告。
-  for (const employee of employees) {
+  const success = []
+  for (const emp of employees) {
     try {
-      const assetInfo = await collectEmployeeAssets(employee, availableFiles)
-      const hasSummary = Boolean(assetInfo.summaryText.trim())
-      const hasAttachments = assetInfo.attachments.length > 0
+      // collect assets (简单匹配同名文件)
+      const normalized = normalizeName(emp.name)
+      const matched = availableFiles.filter((f) => normalizeName(f) === normalized)
 
-      if (!hasSummary && !hasAttachments) {
-        skippedEmployees.push({
-          employee,
-          reason: '缺少体检结果与AI总结',
+      // summary docx?
+      const summaryFile = matched.find((f) => f.includes('总结') && path.extname(f).toLowerCase() === '.docx')
+      const summaryText = summaryFile ? await extractSummaryText(path.join(DATA_DIR, summaryFile)) : (emp.summary || '')
+
+      // attachments
+      const attachments = matched
+        .filter((f) => f !== summaryFile)
+        .map((f) => {
+          const ext = path.extname(f).toLowerCase()
+          const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other'
+          return {
+            fileName: f,
+            fullPath: path.join(DATA_DIR, f),
+            label: buildAttachmentLabel(f),
+            type,
+            ext,
+          }
         })
-        console.warn(`⚠️ ${employee.name} 未生成：缺少体检结果与AI总结`)
-        continue
+
+      const assetInfo = { attachments, summaryText }
+
+      // build imageItems (图片或 pdf => image pages)
+      const imageItems = await buildImageItems(assetInfo, emp)
+
+      // create a fresh copy of template zip for this employee
+      const templateZip = new PizZip(templateBuffer)
+      const outputZip = new PizZip(templateBuffer) // start from template
+
+      // read core files
+      const presentationXml = outputZip.file('ppt/presentation.xml').asText()
+      const presentationRelsXml = outputZip.file('ppt/_rels/presentation.xml.rels').asText()
+      let contentTypesXml = outputZip.file('[Content_Types].xml').asText()
+
+      // determine counters
+      const slideFiles = outputZip.file(/^ppt\/slides\/slide\d+\.xml$/i) || []
+      const nextSlideNumber = getNextNumber(slideFiles, /slide(\d+)\.xml/i)
+      const existingSlideIds = [...presentationXml.matchAll(/<p:sldId[^>]*id="(\d+)"/g)].map(m => parseInt(m[1], 10))
+      const nextSlideId = (existingSlideIds.length ? Math.max(...existingSlideIds) : 256) + 1
+      const existingRelIds = [...presentationRelsXml.matchAll(/Id="rId(\d+)"/g)].map(m => parseInt(m[1], 10) || 0)
+      let nextRelId = existingRelIds.length ? Math.max(...existingRelIds) + 1 : 10
+
+      // media counter
+      let mediaCounter = getInitialMediaCounter(outputZip)
+
+      // --- 1) replace cover placeholders on slide1.xml ---
+      const slide1Path = 'ppt/slides/slide1.xml'
+      if (outputZip.file(slide1Path)) {
+        let slide1Xml = outputZip.file(slide1Path).asText()
+        const dateText = (new Date()).toISOString().slice(0, 10).replace(/-/g, '') // simple date
+        const replacements = {
+          姓名: emp.name || '',
+          性别: emp.gender || '',
+          年龄: emp.age || '',
+          日期: `${new Date().getFullYear()}年${String(new Date().getMonth() + 1).padStart(2, '0')}月${String(new Date().getDate()).padStart(2, '0')}日`,
+        }
+        slide1Xml = replaceTextInSlidePreferred(slide1Xml, replacements)
+        outputZip.file(slide1Path, slide1Xml)
       }
 
-      const pptx = initializePresentation(layout)
-
-      // // 将体检总结放到最后
-      // addSummarySlide(pptx, employee, assetInfo, theme, layout)
-
-      const outputName = buildReportFileName(employee)
-      const outputPath = path.join(OUTPUT_DIR, outputName)
-      await pptx.writeFile({ fileName: outputPath })
-      
-      // 为每个影像资料复制模板第二页
-      const imageItems = await buildImageItems(assetInfo, employee)
-      if (imageItems.length > 0) {
-        await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
+      // --- 2) inject summary into slide3.xml ---
+      const slide3Path = 'ppt/slides/slide3.xml'
+      if (outputZip.file(slide3Path) && (assetInfo.summaryText && assetInfo.summaryText.trim())) {
+        let slide3Xml = outputZip.file(slide3Path).asText()
+        slide3Xml = replaceTextInSlidePreferred(slide3Xml, { 总结: assetInfo.summaryText })
+        outputZip.file(slide3Path, slide3Xml)
       }
-      
-      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
 
-      successReports.push({ employee, outputPath })
-      console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`)
-    } catch (error) {
-      skippedEmployees.push({
-        employee,
-        reason: `生成失败：${error.message}`,
-      })
-      console.error(`❌ ${employee.name} 生成失败：${error.message}`)
+      // --- 3) find template slide2 and its rels & create copies per image item ---
+      const templateSlideNumber = 2
+      const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
+      const templateSlideRelsPath = `ppt/slides/_rels/slide${templateSlideNumber}.xml.rels`
+      const templateSlideFile = templateZip.file(templateSlidePath)
+      const templateSlideRelsFile = templateZip.file(templateSlideRelsPath)
+
+      if (templateSlideFile && imageItems.length) {
+        const templateSlideXml = templateSlideFile.asText()
+        const templateSlideRelsXml = templateSlideRelsFile ? templateSlideRelsFile.asText() : null
+        // parse template slide rels to find image relationships
+        const templateRels = templateSlideRelsXml ? parseRelationships(templateSlideRelsXml) : []
+
+        // determine where to insert new slide ids in presentation.xml:
+        // find the existing <p:sldId> that references slides/slide2.xml and insert after it
+        const presMatch = outputZip.file('ppt/presentation.xml').asText()
+        let sldIdListMatch = presMatch.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
+        let sldIdListInner = sldIdListMatch ? sldIdListMatch[1] : ''
+        const presRelsXml = outputZip.file('ppt/_rels/presentation.xml.rels').asText()
+        // find rId that points to slide2
+        const presRels = parseRelationships(presRelsXml)
+        let slide2Rid = null
+        for (const rel of presRels) {
+          if (rel.Target && rel.Target.replace(/^\/?/, '') === `slides/slide${templateSlideNumber}.xml`) {
+            slide2Rid = rel.Id
+            break
+          }
+        }
+        // find the index in sldIdListInner where r:id="slide2Rid"
+        const sldIdLines = sldIdListInner.split('\n').map(l => l.trim()).filter(Boolean)
+        let insertIndex = -1
+        if (slide2Rid) {
+          for (let i = 0; i < sldIdLines.length; i++) {
+            if (sldIdLines[i].includes(`r:id="${slide2Rid}"`)) {
+              insertIndex = i + 1
+              break
+            }
+          }
+        }
+        // fallback: append at end of existing slide list if not found
+        if (insertIndex === -1) {
+          insertIndex = sldIdLines.length
+        }
+
+        // build new slides one by one
+        const newSlideEntries = []
+        const newSlideRelsToAppend = []
+        let localNextSlideNumber = nextSlideNumber
+        let localNextSlideId = nextSlideId
+        let localNextRelId = nextRelId
+
+        for (const image of imageItems) {
+          const newSlideNumber = localNextSlideNumber++
+          const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
+          const newSlideRelsPath = `ppt/slides/_rels/slide${newSlideNumber}.xml.rels`
+
+          // 1) create a new media for this image
+          // if image.data (base64) use that; else read fullPath
+          let newMediaPath = null
+          if (image.data) {
+            const ext = (image.data.match(/^data:image\/(\w+);base64,/)?.[1] || 'png')
+            const safeExt = ext.startsWith('.') ? ext : `.${ext}`
+            newMediaPath = `ppt/media/image_${mediaCounter++}${safeExt}`
+            const base64 = image.data.replace(/^data:image\/\w+;base64,/, '')
+            const buffer = Buffer.from(base64, 'base64')
+            outputZip.file(newMediaPath, buffer)
+            contentTypesXml = ensureContentTypeOnce(contentTypesXml, `/${newMediaPath}`, 'image/png')
+          } else if (image.fullPath) {
+            const ext = path.extname(image.fullPath) || '.png'
+            newMediaPath = `ppt/media/image_${mediaCounter++}${ext}`
+            const buffer = await fs.readFile(image.fullPath)
+            outputZip.file(newMediaPath, buffer)
+            const ct = ext.match(/\.jpe?g/i) ? 'image/jpeg' : ext.match(/\.png/i) ? 'image/png' : 'image/png'
+            contentTypesXml = ensureContentTypeOnce(contentTypesXml, `/${newMediaPath}`, ct)
+          } else {
+            continue
+          }
+
+          // 2) create new slide xml: base on templateSlideXml, replace text placeholders (影像标题, 姓名, 工号 maybe)
+          const replacements = {
+            影像标题: image.label || '',
+            姓名: emp.name || '',
+            工号: emp.id || '',
+          }
+          let newSlideXml = replaceTextInSlidePreferred(templateSlideXml, replacements)
+
+          // write slide xml
+          outputZip.file(newSlidePath, newSlideXml)
+          // ensure content type for slide
+          contentTypesXml = ensureContentTypeOnce(contentTypesXml, `/${newSlidePath}`, 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml')
+
+          // 3) prepare rels: clone template relations, but for image relationships change Target to our newMediaPath
+          const clonedRels = []
+          if (templateRels && templateRels.length) {
+            for (const r of templateRels) {
+              // clone object shallow
+              const nr = Object.assign({}, r)
+              // if rel is image type, replace Target to newMediaPath (keeping same Id)
+              if (nr.Type && nr.Type.includes('/image')) {
+                // set relative path from slide to media
+                // slides are in ppt/slides/, media in ppt/media/
+                nr.Target = path.posix.relative(`ppt/slides`, newMediaPath).replace(/\\/g, '/')
+              } else if (nr.Type && nr.Type.includes('slideLayout')) {
+                // resolve layout path to template and reuse (we keep same Target)
+                const absolute = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, nr.Target)
+                // we assume layout already exists in template, map to same relative path
+                nr.Target = path.posix.relative(`ppt/slides`, absolute).replace(/\\/g, '/')
+              } else {
+                // other types: copy as resolved relative
+                const absolute = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, nr.Target)
+                nr.Target = path.posix.relative(`ppt/slides`, absolute).replace(/\\/g, '/')
+              }
+              clonedRels.push(nr)
+            }
+          }
+          // write the new rels xml for this slide
+          outputZip.file(newSlideRelsPath, buildRelationshipsXml(clonedRels))
+
+          // 4) add new presentation rel entry for this slide
+          const newRelId = `rId${localNextRelId++}`
+          newSlideEntries.push({
+            slideNumber: newSlideNumber,
+            slideId: localNextSlideId++,
+            relId: newRelId,
+            positionIndex: insertIndex, // we'll insert later
+          })
+          newSlideRelsToAppend.push(`  <Relationship Id="${newRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${newSlideNumber}.xml"/>`)
+        }
+
+        // 5) update presentation.xml: insert new <p:sldId> entries after the determined index
+        // read current presContent
+        let presContent = outputZip.file('ppt/presentation.xml').asText()
+        let sldIdMatch = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
+        const currentInner = sldIdMatch ? sldIdMatch[1].trim().split('\n').map(l => l.trim()).filter(Boolean) : []
+        // build new entries
+        const newEntriesXml = newSlideEntries.map((s) => `    <p:sldId id="${s.slideId}" r:id="${s.relId}"/>`)
+        // insert at insertIndex
+        const combined = [...currentInner.slice(0, insertIndex), ...newEntriesXml, ...currentInner.slice(insertIndex)]
+        const newSldIdLst = `<p:sldIdLst>\n${combined.join('\n')}\n</p:sldIdLst>`
+        presContent = presContent.replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, newSldIdLst)
+        outputZip.file('ppt/presentation.xml', presContent)
+
+        // 6) update presentation.xml.rels: append new Relationship lines before </Relationships>
+        let presRelsContent = outputZip.file('ppt/_rels/presentation.xml.rels').asText()
+        const insertPos = presRelsContent.lastIndexOf('</Relationships>')
+        presRelsContent = presRelsContent.slice(0, insertPos) + '\n' + newSlideRelsToAppend.join('\n') + '\n' + presRelsContent.slice(insertPos)
+        outputZip.file('ppt/_rels/presentation.xml.rels', presRelsContent)
+
+        // 7) update [Content_Types].xml was handled per-media & per-slide above in contentTypesXml
+        outputZip.file('[Content_Types].xml', contentTypesXml)
+
+      } // end processing template slide2 copies
+
+      // write the final zip buffer to a new pptx file for this employee
+      const outFileName = `员工体检报告_${(emp.name || 'unknown')}_${(emp.id || '')}_${(new Date()).toISOString().replace(/[:.]/g, '')}.pptx`
+      const outPath = path.join(OUTPUT_DIR, outFileName)
+
+      const finalBuffer = outputZip.generate({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } })
+      await fs.writeFile(outPath, finalBuffer)
+
+      success.push({ emp, outPath })
+      console.log(`✓ 已生成：${outPath}`)
+    } catch (err) {
+      console.error(`❌ ${emp.name || 'UNKNOWN'} 生成失败：`, err)
     }
   }
 
-  // 5) 输出汇总信息，便于快速排查。
-  console.log('\n===== 生成统计 =====')
-  console.log(`✅ 已生成：${successReports.length} 人`)
-  successReports.forEach((item) => {
-    console.log(`  - ${item.employee.name}（${item.employee.id}） -> ${item.outputPath}`)
-  })
-
-  console.log(`⚠️ 未生成：${skippedEmployees.length} 人`)
-  skippedEmployees.forEach((item) => {
-    console.log(`  - ${item.employee.name}（${item.employee.id}）：${item.reason}`)
-  })
+  console.log('生成完成，数量：', success.length)
 }
 
-main().catch((error) => {
-  console.error('❌ 生成失败：', error)
-  process.exitCode = 1
-});
+function resolveRelationshipPath (from, target) {
+  // from e.g. "ppt/slides/slide2.xml", target e.g. "../media/image1.png"
+  const baseDir = path.posix.dirname(from)
+  return path.posix.normalize(path.posix.join(baseDir, target))
+}
+
+// ================= run
+main().catch((e) => {
+  console.error('执行失败：', e)
+  process.exit(1)
+})
