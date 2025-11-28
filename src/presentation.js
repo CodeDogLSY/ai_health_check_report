@@ -28,70 +28,7 @@ function getLayoutGuides (layout) {
   return { sideMargin, topMargin, bottomMargin, contentWidth }
 }
 
-function addOverviewSlide (pptx, employee, assets, theme, layout) {
-  const slide = pptx.addSlide()
-  slide.background = { color: 'FFFFFF' }
 
-  const metrics = getLayoutGuides(layout)
-  slide.addText(`${employee.name} · 检查项概览`, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 28 : 24,
-    bold: true,
-    color: theme.primary.replace('#', ''),
-  })
-
-  const headerCells = [
-    { text: '类别', options: { bold: true, color: theme.textLight.replace('#', ''), fill: theme.primary.replace('#', '') } },
-    { text: '文件名', options: { bold: true, color: theme.textLight.replace('#', ''), fill: theme.primary.replace('#', '') } },
-    { text: '备注', options: { bold: true, color: theme.textLight.replace('#', ''), fill: theme.primary.replace('#', '') } },
-  ]
-
-  const rows = [headerCells]
-
-  if (!assets.attachments.length) {
-    rows.push([
-      { text: '暂无', options: {} },
-      { text: '未检测到检查文件', options: {} },
-      { text: '', options: {} },
-    ])
-  } else {
-    assets.attachments.forEach((item) => {
-      rows.push([
-        { text: formatAttachmentType(item.type), options: {} },
-        { text: item.fileName, options: {} },
-        { text: item.label || '附件', options: {} },
-      ])
-    })
-  }
-
-  const tableY = metrics.topMargin + 0.8
-  slide.addTable(rows, {
-    x: metrics.sideMargin,
-    y: tableY,
-    w: metrics.contentWidth,
-    colW: [
-      Number((metrics.contentWidth * 0.18).toFixed(3)),
-      Number((metrics.contentWidth * 0.5).toFixed(3)),
-      Number((metrics.contentWidth * 0.32).toFixed(3)),
-    ],
-    border: { type: 'solid', color: theme.neutral.replace('#', ''), pt: 1 },
-    fill: theme.background.replace('#', ''),
-    autoPage: true,
-    autoPageRepeatHeader: true,
-    autoPageLineWeight: 0.5,
-    color: theme.textDark.replace('#', ''),
-    fontSize: 16,
-    bold: false,
-    margin: 0.1,
-    rowH: 0.4,
-    valign: 'middle',
-    align: 'left',
-    header: true,
-    headerFill: theme.primary.replace('#', ''),
-  })
-}
 
 /**
  * 添加体检总结幻灯片
@@ -189,66 +126,6 @@ function addImageSlides (pptx, employee, imageItems, theme, layout) {
   })
 }
 
-function addDocumentSlide (pptx, employee, attachments, theme, layout) {
-  const documents = attachments.filter((item) => item.type !== 'image')
-  if (!documents.length) {
-    return
-  }
-
-  const slide = pptx.addSlide()
-  slide.background = { color: theme.background.replace('#', '') }
-
-  const metrics = getLayoutGuides(layout)
-  slide.addText(`${employee.name} · 其他检查附件`, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 26 : 22,
-    bold: true,
-    color: theme.primary.replace('#', ''),
-  })
-
-  const items = documents.map((item) => ({
-    text: `${formatAttachmentType(item.type)}｜${item.label}｜${item.fileName}`,
-    options: {
-      bullet: true,
-      fontSize: 18,
-      color: theme.textDark.replace('#', ''),
-    },
-  }))
-
-  slide.addText(items, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin + 0.8,
-    w: metrics.contentWidth,
-    lineSpacingMultiple: 1.3,
-  })
-
-  slide.addText('注：PDF/其他资料请在 data 目录中查看原文件。', {
-    x: metrics.sideMargin,
-    y: layout.height - metrics.bottomMargin,
-    fontSize: 14,
-    color: theme.neutral.replace('#', ''),
-  })
-}
-
-function formatAttachmentType (type) {
-  if (type === 'image') return '影像'
-  if (type === 'pdf') return 'PDF'
-  return '其他'
-}
-
-function formatSummaryTeaser (summary) {
-  if (!summary) {
-    return '总结：未找到对应文档，请补充。'
-  }
-
-  const normalized = summary.replace(/\n+/g, ' ').trim()
-  if (normalized.length <= 120) {
-    return `总结概述：${normalized}`
-  }
-  return `总结概述：${normalized.slice(0, 117)}...`
-}
 
 function chunkText (text, chunkSize) {
   if (!text) return []
@@ -275,10 +152,8 @@ function buildReportFileName (employee) {
 
 module.exports = {
   initializePresentation,
-  addOverviewSlide,
   addSummarySlide,
   addImageSlides,
-  addDocumentSlide,
   buildReportFileName,
 };
 
