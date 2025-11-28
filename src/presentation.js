@@ -155,6 +155,14 @@ function addOverviewSlide (pptx, employee, assets, theme, layout) {
   })
 }
 
+/**
+ * 添加体检总结幻灯片
+ * @param {Object} pptx - PptxGenJS 实例
+ * @param {Object} employee - 员工信息
+ * @param {Object} assets - 员工资产信息
+ * @param {Object} theme - 主题颜色
+ * @param {Object} layout - 布局信息
+ */
 function addSummarySlide (pptx, employee, assets, theme, layout) {
   const slide = pptx.addSlide()
   slide.background = { color: theme.background.replace('#', '') }
@@ -189,6 +197,14 @@ function addSummarySlide (pptx, employee, assets, theme, layout) {
   })
 }
 
+/**
+ * 添加影像资料幻灯片
+ * @param {Object} pptx - PptxGenJS 实例
+ * @param {Object} employee - 员工信息
+ * @param {Array} imageItems - 影像资料列表
+ * @param {Object} theme - 主题颜色
+ * @param {Object} layout - 布局信息
+ */
 function addImageSlides (pptx, employee, imageItems, theme, layout) {
   if (!imageItems.length) {
     return
