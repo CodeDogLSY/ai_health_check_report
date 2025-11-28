@@ -161,7 +161,7 @@ async function loadEmployees (sheetPath) {
 
     employees.push({
       name,
-      sex: normalizeText(record['性别']) || '未知',
+      gender: normalizeText(record['性别']) || '未知',
       age: normalizeText(record['年龄']) || '未知',
       id: normalizeText(record['证件号']) || '未知',
       date: normalizeText(record['体检日期']) || '未知',
@@ -1170,7 +1170,7 @@ function applyCoverPlaceholders (xml, employee = {}, dateValue = new Date()) {
     姓名: employee.name || '',
     性别: employee.gender || '',
     年龄: employee.age || '',
-    日期: dateText,
+    日期: employee.date || '',
     工号: employee.id || '',
   }
 
@@ -1313,7 +1313,6 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
 
     // 替换幻灯片中的文本占位符
     const replacements = {
-      影像标题: image.label,
       姓名: employee.name || '',
       工号: employee.id || '',
     }
