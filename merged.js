@@ -1,9 +1,612 @@
-const fs = require('fs-extra')
 const path = require('path')
+const fs = require('fs-extra')
+const ExcelJS = require('exceljs')
 const PizZip = require('pizzip')
+const PptxGenJS = require('pptxgenjs')
+const mammoth = require('mammoth')
+const { fromPath: pdfFromPath } = require('pdf2pic')
+const { createCanvas } = require('canvas')
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js')
+const crypto = require('crypto')
 
-const POSIX = path.posix
+pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
+// ==================== config.js ====================
+const ROOT = path.resolve(__dirname, '.')
+const DATA_DIR = path.join(ROOT, 'data')
+const OUTPUT_DIR = path.join(ROOT, 'output')
+const PDF_IMAGE_DIR = path.join(OUTPUT_DIR, '_pdf_images')
+const PDF_TEMP_DIR = path.join(PDF_IMAGE_DIR, '_tmp')
+
+const TEMPLATE_CANDIDATES = ['2025员工体检报告（模板）.pptx', 'template.pptx']
+const EMPLOYEE_SHEET_CANDIDATES = ['员工表.xlsx', 'employees.xlsx']
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp'])
+const PDF_EXTENSIONS = new Set(['.pdf'])
+const EMU_PER_INCH = 914400
+
+const DEFAULT_THEME = {
+  primary: '#4472C4',
+  secondary: '#ED7D31',
+  neutral: '#A5A5A5',
+  highlight: '#FFC000',
+  textDark: '#000000',
+  textLight: '#FFFFFF',
+  background: '#F7F9FC',
+}
+
+const DEFAULT_LAYOUT = {
+  width: 10,
+  height: 5.625,
+  orientation: 'landscape',
+}
+
+// ==================== utils.js ====================
+function normalizeName(value) {
+  if (!value) return ''
+  return String(value)
+    .replace(/\.[^.]+$/, '')
+    .replace(/[-_].*$/, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+}
+
+function normalizeText(value) {
+  if (value === undefined || value === null) return ''
+  return String(value).trim()
+}
+
+function sanitizeForFilename(value) {
+  return value.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '')
+}
+
+function buildAsciiSafeLabel(value) {
+  const sanitized = sanitizeForFilename(value).replace(/[^\x00-\x7F]/g, '')
+  if (sanitized) {
+    return sanitized
+  }
+  return `pdf_${Date.now()}`
+}
+
+function formatDate(date) {
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mi = String(date.getMinutes()).padStart(2, '0')
+  return `${yyyy}${mm}${dd}_${hh}${mi}`
+}
+
+async function resolveExistingPath(candidates, label) {
+  for (const candidate of candidates) {
+    const fullPath = path.join(ROOT, candidate)
+    if (await fs.pathExists(fullPath)) {
+      if (candidate !== candidates[0]) {
+        console.warn(`ℹ️ ${label}使用备用路径：${candidate}`)
+      }
+      return fullPath
+    }
+  }
+  throw new Error(`${label}缺失，请确认以下文件之一存在：${candidates.join(', ')}`)
+}
+
+// ==================== loaders.js ====================
+/**
+ * 从 PPT 模板中提取主题配色，找不到则返回默认主题。
+ */
+async function loadThemeColors(templatePath) {
+  if (!(await fs.pathExists(templatePath))) {
+    console.warn('⚠️ 未找到模板文件，使用默认颜色。')
+    return DEFAULT_THEME
+  }
+
+  try {
+    const buffer = await fs.readFile(templatePath)
+    const zip = new PizZip(buffer)
+    const themeFile = zip.file('ppt/theme/theme1.xml')
+
+    if (!themeFile) {
+      return DEFAULT_THEME
+    }
+
+    const xml = themeFile.asText()
+    const colors = {
+      accent1: extractHex(xml, 'accent1'),
+      accent2: extractHex(xml, 'accent2'),
+      accent3: extractHex(xml, 'accent3'),
+      accent4: extractHex(xml, 'accent4'),
+      accent5: extractHex(xml, 'accent5'),
+      accent6: extractHex(xml, 'accent6'),
+      dk1: extractHex(xml, 'dk1'),
+      lt1: extractHex(xml, 'lt1'),
+      lt2: extractHex(xml, 'lt2'),
+    }
+
+    return {
+      primary: buildColor(colors.accent1, DEFAULT_THEME.primary),
+      secondary: buildColor(colors.accent2, DEFAULT_THEME.secondary),
+      neutral: buildColor(colors.accent3, DEFAULT_THEME.neutral),
+      highlight: buildColor(colors.accent4, DEFAULT_THEME.highlight),
+      accent5: buildColor(colors.accent5, '#5B9BD5'),
+      accent6: buildColor(colors.accent6, '#70AD47'),
+      textDark: buildColor(colors.dk1, DEFAULT_THEME.textDark),
+      textLight: buildColor(colors.lt1, DEFAULT_THEME.textLight),
+      background: buildColor(colors.lt2, DEFAULT_THEME.background),
+    }
+  } catch (error) {
+    console.warn(`⚠️ 读取模板主题失败，将使用默认颜色。原因：${error.message}`)
+    return DEFAULT_THEME
+  }
+}
+
+/**
+ * 解析 PPT 模板的宽高布局信息。
+ */
+async function loadTemplateLayout(templatePath) {
+  const fallback = { ...DEFAULT_LAYOUT }
+
+  if (!(await fs.pathExists(templatePath))) {
+    return fallback
+  }
+
+  try {
+    const buffer = await fs.readFile(templatePath)
+    const zip = new PizZip(buffer)
+    const presentationFile = zip.file('ppt/presentation.xml')
+
+    if (!presentationFile) {
+      return fallback
+    }
+
+    const xml = presentationFile.asText()
+    const sizeMatch = xml.match(/<p:sldSz[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i)
+
+    if (!sizeMatch) {
+      return fallback
+    }
+
+    const widthEmu = parseInt(sizeMatch[1], 10)
+    const heightEmu = parseInt(sizeMatch[2], 10)
+
+    if (Number.isNaN(widthEmu) || Number.isNaN(heightEmu)) {
+      return fallback
+    }
+
+    const width = Number((widthEmu / EMU_PER_INCH).toFixed(3))
+    const height = Number((heightEmu / EMU_PER_INCH).toFixed(3))
+    const orientation = width >= height ? 'landscape' : 'portrait'
+
+    return { width, height, orientation }
+  } catch (error) {
+    console.warn(`⚠️ 模板布局解析失败，将使用默认 16:9 布局。原因：${error.message}`)
+    return fallback
+  }
+}
+
+/**
+ * 加载 Excel 员工表，并抽取姓名与工号。
+ */
+async function loadEmployees(sheetPath) {
+  if (!(await fs.pathExists(sheetPath))) {
+    throw new Error(`未找到员工表：${sheetPath}`)
+  }
+
+  const workbook = new ExcelJS.Workbook()
+  await workbook.xlsx.readFile(sheetPath)
+  const worksheet = workbook.worksheets[0]
+
+  if (!worksheet) {
+    return []
+  }
+
+  const headerRow = worksheet.getRow(1)
+  const headers = headerRow.values.map((value) => (typeof value === 'string' ? value.trim() : value))
+
+  const employees = []
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return
+
+    const record = {}
+    row.values.forEach((cell, cellIndex) => {
+      const header = headers[cellIndex]
+      if (!header || typeof header !== 'string') return
+      record[header] = typeof cell === 'string' ? cell.trim() : cell
+    })
+
+    const name = normalizeText(record['姓名'] || record['name'])
+    if (!name) return
+
+    employees.push({
+      name,
+      id: normalizeText(record['工号'] || record['员工工号'] || record['编号']) || '未知',
+      raw: record,
+    })
+  })
+
+  return employees
+}
+
+function extractHex(xml, tag) {
+  const srgbRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr[^>]*?val="([0-9A-F]{6})"`, 'i')
+  const sysRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*?lastClr="([0-9A-F]{6})"`, 'i')
+
+  const srgbMatch = xml.match(srgbRegex)
+  if (srgbMatch) {
+    return srgbMatch[1]
+  }
+
+  const sysMatch = xml.match(sysRegex)
+  if (sysMatch) {
+    return sysMatch[1]
+  }
+
+  return null
+}
+
+function buildColor(value, fallback) {
+  if (!value) {
+    return fallback
+  }
+  return `#${value.toUpperCase()}`
+}
+
+// ==================== assets.js ====================
+/**
+ * 读取数据目录，若不存在则返回空数组。
+ */
+async function safeReadDir (dir) {
+  if (!(await fs.pathExists(dir))) {
+    console.warn(`⚠️ 数据目录不存在：${dir}`)
+    return []
+  }
+  return fs.readdir(dir)
+}
+
+/**
+ * 为单个员工收集所有匹配的资料文件。
+ */
+async function collectEmployeeAssets (employee, files) {
+  const normalized = normalizeName(employee.name)
+  const matchingFiles = files.filter((file) => normalizeName(file) === normalized)
+
+  const summaryFile = matchingFiles.find(
+    (file) => file.includes('总结') && path.extname(file).toLowerCase() === '.docx',
+  )
+  const summaryText = summaryFile
+    ? await extractSummaryText(path.join(DATA_DIR, summaryFile))
+    : ''
+
+  const attachments = matchingFiles
+    .filter((file) => file !== summaryFile)
+    .map((file) => {
+      const ext = path.extname(file).toLowerCase()
+      const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other'
+      const label = buildAttachmentLabel(file)
+
+      // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
+      let priority = 99 // 默认优先级
+      if (file.toLowerCase().includes('inbody')) {
+        priority = 1
+      } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
+        priority = 2
+      } else if (file.toLowerCase().includes('血检')) {
+        priority = 3
+      } else if (file.toLowerCase().includes('心电图')) {
+        priority = 4
+      } else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
+        priority = 5
+      }
+
+      return {
+        fileName: file,
+        fullPath: path.join(DATA_DIR, file),
+        label,
+        type,
+        ext,
+        priority,
+      }
+    })
+    .sort((a, b) => a.priority - b.priority)
+
+  return {
+    employee,
+    summaryFile: summaryFile ? path.join(DATA_DIR, summaryFile) : null,
+    summaryText: summaryText || '',
+    attachments,
+    totalFiles: matchingFiles.length,
+  }
+}
+
+async function extractSummaryText (filePath) {
+  try {
+    const { value } = await mammoth.extractRawText({ path: filePath })
+    return value
+      .split('\n')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join('\n')
+  } catch (error) {
+    console.warn(`⚠️ 无法读取AI总结：${filePath}，原因：${error.message}`)
+    return ''
+  }
+}
+
+function buildAttachmentLabel (fileName) {
+  const base = path.basename(fileName, path.extname(fileName))
+  const parts = base.split(/[-_]/)
+  return parts.slice(1).join('-') || '附件'
+}
+
+/**
+ * 将图片和 PDF（转换为图片）统筹为 PPT 可用素材。
+ */
+async function buildImageItems (assetInfo, employee) {
+  const imageItems = []
+
+  // 按照附件的优先级顺序处理每个附件
+  for (const attachment of assetInfo.attachments) {
+    if (attachment.type === 'image') {
+      // 图片类型直接添加
+      imageItems.push({
+        label: attachment.label,
+        fullPath: attachment.fullPath,
+      })
+    } else if (attachment.type === 'pdf') {
+      // PDF类型转换为图片后添加
+      const converted = await convertPdfAttachment(attachment, employee)
+      imageItems.push(...converted)
+    }
+  }
+
+  return imageItems
+}
+
+async function convertPdfAttachment (pdfAttachment, employee) {
+  let tempPdfPath = ''
+  try {
+    const safeLabel = buildAsciiSafeLabel(`${employee.id}_${employee.name}_${pdfAttachment.label}`)
+    const tempPdfName = `${crypto.randomUUID()}.pdf`
+    tempPdfPath = path.join(PDF_TEMP_DIR, tempPdfName)
+    await fs.ensureDir(PDF_TEMP_DIR)
+    await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
+
+    const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
+    if (pdfImgPages.length) {
+      return pdfImgPages
+    }
+
+    return convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+  } catch (error) {
+    console.warn(`⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`)
+    return []
+  } finally {
+    if (tempPdfPath) {
+      await fs.remove(tempPdfPath).catch(() => { })
+    }
+  }
+}
+
+async function convertWithPdfRenderer (pdfPath, attachment) {
+  try {
+    const pdfBuffer = await fs.readFile(pdfPath)
+    const pdfData = new Uint8Array(pdfBuffer)
+    const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
+    const pages = []
+
+    for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
+      const page = await pdfDoc.getPage(pageNumber)
+      const viewport = page.getViewport({ scale: 2 })
+      const canvas = createCanvas(viewport.width, viewport.height)
+      const context = canvas.getContext('2d')
+
+      await page.render({ canvasContext: context, viewport }).promise
+      const imageBuffer = canvas.toBuffer('image/png')
+      pages.push({
+        label: `${attachment.label} 第${pageNumber}页`,
+        data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+      })
+    }
+
+    return pages
+  } catch (error) {
+    console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
+    return []
+  }
+}
+
+async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
+  try {
+    await fs.ensureDir(PDF_IMAGE_DIR)
+    const convert = pdfFromPath(pdfPath, {
+      density: 144,
+      format: 'png',
+      width: 1200,
+      height: 800,
+      saveFilename: safeLabel,
+      savePath: PDF_IMAGE_DIR,
+    })
+
+    const pages = await convert.bulk(-1, { responseType: 'base64' })
+    return pages.map((pageResult, idx) => ({
+      label: `${attachment.label} 第${pageResult.page || idx + 1}页`,
+      data: `data:image/png;base64,${pageResult.base64}`,
+    }))
+  } catch (error) {
+    console.warn(`⚠️ pdf2pic 转换失败（${attachment.fileName}）：${error.message}`)
+    return []
+  }
+}
+
+// ==================== presentation.js ====================
+/**
+ * 初始化 PPT 文档及基础元数据。
+ */
+function initializePresentation (layout) {
+  const pptx = new PptxGenJS()
+  const layoutName = `TEMPLATE_${layout.width}x${layout.height}`
+  pptx.defineLayout({
+    name: layoutName,
+    width: layout.width,
+    height: layout.height,
+  })
+  pptx.layout = layoutName
+  pptx.author = 'Health Manage AI'
+  pptx.company = 'Health Manage AI'
+  pptx.subject = '员工体检报告'
+  pptx.title = '2025 员工体检报告'
+  return pptx
+}
+
+function getLayoutGuides (layout) {
+  const sideMargin = Number((layout.width * 0.08).toFixed(3))
+  const topMargin = Number((layout.height * 0.05).toFixed(3))
+  const bottomMargin = Number((layout.height * 0.06).toFixed(3))
+  const contentWidth = Number((layout.width - sideMargin * 2).toFixed(3))
+  return { sideMargin, topMargin, bottomMargin, contentWidth }
+}
+
+
+
+/**
+ * 添加体检总结幻灯片
+ * @param {Object} pptx - PptxGenJS 实例
+ * @param {Object} employee - 员工信息
+ * @param {Object} assets - 员工资产信息
+ * @param {Object} theme - 主题颜色
+ * @param {Object} layout - 布局信息
+ */
+function addSummarySlide (pptx, employee, assets, theme, layout) {
+  const slide = pptx.addSlide()
+  slide.background = { color: theme.background.replace('#', '') }
+
+  const metrics = getLayoutGuides(layout)
+  slide.addText(`${employee.name} · 体检总结`, {
+    x: metrics.sideMargin,
+    y: metrics.topMargin,
+    w: metrics.contentWidth,
+    fontSize: layout.orientation === 'portrait' ? 28 : 24,
+    bold: true,
+    color: theme.primary.replace('#', ''),
+  })
+
+  const summary = assets.summaryText || '暂无总结，请补充。'
+  const paragraphs = chunkText(summary, 120)
+  const textRuns = paragraphs.map((paragraph) => ({
+    text: paragraph,
+    options: {
+      bullet: true,
+      color: theme.textDark.replace('#', ''),
+      fontSize: 18,
+    },
+  }))
+
+  slide.addText(textRuns, {
+    x: metrics.sideMargin,
+    y: metrics.topMargin + 0.8,
+    w: metrics.contentWidth,
+    h: layout.height - metrics.topMargin - metrics.bottomMargin - 1,
+    lineSpacingMultiple: 1.2,
+  })
+}
+
+/**
+ * 添加影像资料幻灯片
+ * @param {Object} pptx - PptxGenJS 实例
+ * @param {Object} employee - 员工信息
+ * @param {Array} imageItems - 影像资料列表
+ * @param {Object} theme - 主题颜色
+ * @param {Object} layout - 布局信息
+ * @param {string} templatePath - 模板文件路径
+ */
+async function addImageSlides (pptx, employee, imageItems, theme, layout, templatePath) {
+  if (!imageItems.length) {
+    return
+  }
+
+  // 读取模板文件，获取第二页幻灯片内容
+  let templateSlideXml = null
+  if (await fs.pathExists(templatePath)) {
+    try {
+      const buffer = await fs.readFile(templatePath)
+      const templateZip = new PizZip(buffer)
+      const templateSlidePath = 'ppt/slides/slide2.xml'
+      const templateSlide = templateZip.file(templateSlidePath)
+      if (templateSlide) {
+        templateSlideXml = templateSlide.asText()
+      }
+    } catch (error) {
+      console.warn('⚠️ 读取模板第二页失败，将使用默认样式：', error.message)
+    }
+  }
+
+  const metrics = getLayoutGuides(layout)
+  for (const image of imageItems) {
+    let slide
+
+    if (templateSlideXml) {
+      // 基于模板第二页创建幻灯片
+      slide = pptx.addSlide()
+      // 由于 PptxGenJS 不直接支持从 XML 创建幻灯片，我们仍使用原有方式创建
+      // 但可以保留模板的背景和布局风格
+      slide.background = { color: theme.background.replace('#', '') }
+    } else {
+      // 使用原有方式创建幻灯片
+      slide = pptx.addSlide()
+      slide.background = { color: theme.background.replace('#', '') }
+    }
+
+    slide.addText(image.label, {
+      x: metrics.sideMargin,
+      y: metrics.topMargin,
+      w: metrics.contentWidth,
+      fontSize: layout.orientation === 'portrait' ? 26 : 22,
+      bold: true,
+      color: theme.primary.replace('#', ''),
+    })
+
+    const imagePayload = image.data
+      ? { data: image.data }
+      : { path: image.fullPath }
+
+    const imageTop = metrics.topMargin + 0.4
+    const maxWidth = metrics.contentWidth
+    const maxHeight = Math.max(3, layout.height - imageTop - metrics.bottomMargin)
+
+    slide.addImage({
+      ...imagePayload,
+      x: metrics.sideMargin,
+      y: imageTop,
+      w: maxWidth,
+      h: maxHeight,
+      sizing: { type: 'contain', w: maxWidth, h: maxHeight },
+    })
+  }
+}
+
+function chunkText (text, chunkSize) {
+  if (!text) return []
+  const paragraphs = text.split('\n').filter(Boolean)
+  const chunks = []
+
+  paragraphs.forEach((paragraph) => {
+    if (paragraph.length <= chunkSize) {
+      chunks.push(paragraph)
+    } else {
+      for (let i = 0; i < paragraph.length; i += chunkSize) {
+        chunks.push(paragraph.slice(i, i + chunkSize))
+      }
+    }
+  })
+
+  return chunks.length ? chunks : ['暂无内容']
+}
+
+function buildReportFileName (employee) {
+  const safeName = sanitizeForFilename(`${employee.name}_${employee.id}`)
+  return `员工体检报告_${safeName}_${formatDate(new Date())}.pptx`
+}
+
+// ==================== templateSlides.js ====================
 const CONTENT_TYPES = {
   slide: 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml',
   slideLayout: 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
@@ -574,10 +1177,7 @@ function updatePresentationDocuments (zip, state) {
 }
 
 function extractExistingSlideEntries (presContent) {
-  const match = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
-  if (!match) {
-    throw new Error('presentation.xml 缺少 p:sldIdLst')
-  }
+  const match = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/) || { raw: '<p:sldIdLst></p:sldIdLst>', inner: '' }
   return { raw: match[0], inner: match[1] }
 }
 
@@ -647,8 +1247,8 @@ function appendMasterEntries (presContent, state) {
     throw new Error('presentation.xml.rels 缺少 Relationships 结束标签')
   }
 
-  const masterListMatch = presContent.match(/<p:sldMasterIdLst>([\s\S]*?)<\/p:sldMasterIdLst>/)
-  const existingEntries = masterListMatch
+  const masterListMatch = presContent.match(/<p:sldMasterIdLst>([\s\S]*?)<\/p:sldMasterIdLst>/) || { 1: '' }
+  const existingEntries = masterListMatch[1]
     ? masterListMatch[1]
       .split('\n')
       .map((line) => line.trim())
@@ -677,7 +1277,7 @@ ${[...existingEntries, ...newMasterEntries].join('\n')}
 </p:sldMasterIdLst>`
 
   let updatedPres = presContent
-  if (masterListMatch) {
+  if (masterListMatch[0]) {
     updatedPres = presContent.replace(masterListMatch[0], newMasterList)
   } else {
     updatedPres = presContent.replace(
@@ -733,22 +1333,16 @@ function buildEmptyRelationships () {
 }
 
 function resolveRelationshipPath (from, target) {
-  const baseDir = POSIX.dirname(from)
-  return POSIX.normalize(POSIX.join(baseDir, target))
+  const baseDir = path.posix.dirname(from)
+  return path.posix.normalize(path.posix.join(baseDir, target))
 }
 
 function relativePath (from, to) {
-  const fromDir = POSIX.dirname(from)
-  let relPath = POSIX.relative(fromDir, to)
+  const fromDir = path.posix.dirname(from)
+  let relPath = path.posix.relative(fromDir, to)
 
   // 确保路径使用正斜杠，符合PPTX规范
   relPath = relPath.replace(/\\/g, '/')
-
-  // 确保路径不包含不必要的../，直接使用相对路径
-  // PPTX关系文件中的路径应该直接指向目标，不应该包含../
-  // 如果目标在当前目录或子目录，直接返回
-  // 如果目标在父目录，应该使用绝对路径（但PPTX关系文件要求相对路径）
-  // 所以我们需要确保路径是正确的相对路径
 
   // 移除所有./前缀
   relPath = relPath.replace(/^\.\//g, '')
@@ -757,12 +1351,12 @@ function relativePath (from, to) {
 }
 
 function layoutRelationshipsPath (layoutPath) {
-  const baseName = POSIX.basename(layoutPath)
+  const baseName = path.posix.basename(layoutPath)
   return `ppt/slideLayouts/_rels/${baseName}.rels`
 }
 
 function masterRelationshipsPath (masterPath) {
-  const baseName = POSIX.basename(masterPath)
+  const baseName = path.posix.basename(masterPath)
   return `ppt/slideMasters/_rels/${baseName}.rels`
 }
 
@@ -841,7 +1435,7 @@ function replaceTextInSlidePreferred (xmlContent, replacements) {
       })
 
       // 替换[占位符]格式
-      const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\]`, 'gi')
+      const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`, 'gi')
       updatedContent = updatedContent.replace(bracketPattern, escapedValue)
 
       // 替换直接文本格式
@@ -870,9 +1464,9 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
   // 保存图片到输出 ZIP
   let newImagePath
   if (image.data) {
-    const ext = image.data.match(/data:image\/(\w+);base64,/)?.[1] || 'png'
+    const ext = image.data.match(/data:image\/(\\w+);base64,/)?.[1] || 'png'
     newImagePath = `ppt/media/image_${state.mediaCounter++}.${ext}`
-    const base64Data = image.data.replace(/^data:image\/\w+;base64,/, '')
+    const base64Data = image.data.replace(/^data:image\/\\w+;base64,/, '')
     const buffer = Buffer.from(base64Data, 'base64')
     outputZip.file(newImagePath, buffer)
   } else if (image.fullPath) {
@@ -980,8 +1574,92 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
   await fs.writeFile(outputPath, updatedBuffer)
 }
 
-module.exports = {
-  insertTemplateSlides,
-  copyTemplateSecondPageForImages,
-};
+// ==================== index.js ====================
+/**
+ * 主入口：读取员工资料并批量生成 PPT 报告。
+ */
+async function main () {
+  // 1) 准备输出目录，避免中途写文件失败。
+  await fs.ensureDir(OUTPUT_DIR)
+  await fs.ensureDir(PDF_IMAGE_DIR)
+  await fs.ensureDir(PDF_TEMP_DIR)
 
+  // 2) 定位模板与员工表，支持备用文件名。
+  const templatePath = await resolveExistingPath(TEMPLATE_CANDIDATES, '模板文件')
+  const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表')
+
+  // 3) 读取模板布局、配色以及员工数据。
+  const layout = await loadTemplateLayout(templatePath)
+  const theme = await loadThemeColors(templatePath)
+  const employees = await loadEmployees(sheetPath)
+
+  if (!employees.length) {
+    console.warn('⚠️ 员工表为空，已结束。')
+    return
+  }
+
+  const availableFiles = await safeReadDir(DATA_DIR)
+  const successReports = []
+  const skippedEmployees = []
+
+  // 4) 针对每位员工构建个性化报告。
+  for (const employee of employees) {
+    try {
+      const assetInfo = await collectEmployeeAssets(employee, availableFiles)
+      const hasSummary = Boolean(assetInfo.summaryText.trim())
+      const hasAttachments = assetInfo.attachments.length > 0
+
+      if (!hasSummary && !hasAttachments) {
+        skippedEmployees.push({
+          employee,
+          reason: '缺少体检结果与AI总结',
+        })
+        console.warn(`⚠️ ${employee.name} 未生成：缺少体检结果与AI总结`)
+        continue
+      }
+
+      const pptx = initializePresentation(layout)
+
+      // // 将体检总结放到最后
+      // addSummarySlide(pptx, employee, assetInfo, theme, layout)
+
+      const outputName = buildReportFileName(employee)
+      const outputPath = path.join(OUTPUT_DIR, outputName)
+      await pptx.writeFile({ fileName: outputPath })
+      
+      // 为每个影像资料复制模板第二页
+      const imageItems = await buildImageItems(assetInfo, employee)
+      if (imageItems.length > 0) {
+        await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
+      }
+      
+      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
+
+      successReports.push({ employee, outputPath })
+      console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`)
+    } catch (error) {
+      skippedEmployees.push({
+        employee,
+        reason: `生成失败：${error.message}`,
+      })
+      console.error(`❌ ${employee.name} 生成失败：${error.message}`)
+    }
+  }
+
+  // 5) 输出汇总信息，便于快速排查。
+  console.log('\n===== 生成统计 =====')
+  console.log(`✅ 已生成：${successReports.length} 人`)
+  successReports.forEach((item) => {
+    console.log(`  - ${item.employee.name}（${item.employee.id}） -> ${item.outputPath}`)
+  })
+
+  console.log(`⚠️ 未生成：${skippedEmployees.length} 人`)
+  skippedEmployees.forEach((item) => {
+    console.log(`  - ${item.employee.name}（${item.employee.id}）：${item.reason}`)
+  })
+}
+
+main().catch((error) => {
+  console.error('❌ 生成失败：', error)
+  process.exitCode = 1
+});
