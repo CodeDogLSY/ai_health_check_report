@@ -625,6 +625,7 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
 
   const relItems = parseRelationships(templateRels.asText())
   const updated = relItems.map((rel) => {
+    // 1️⃣ SlideLayout 关系：重新映射布局路径
     if (rel.Type === REL_TYPES.slideLayout) {
       const absolutePath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
       const layoutInfo = ensureLayoutAssets({
@@ -633,43 +634,24 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
         templateLayoutPath: absolutePath,
         state,
       })
-
       rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, layoutInfo.newPath)
       return rel
     }
 
+    // 2️⃣ 图片（重点更新）
     if (rel.Type === REL_TYPES.image) {
-      // 检查是否有新的图片需要替换（针对模板第二页）
+      // 如果是模板第2页，则尝试使用新的图片映射
       if (templateSlideNumber === 2) {
-        // 查找当前幻灯片对应的图片映射
-        const slideImageKey = `${newSlideNumber}_`
-        let newMediaTarget = null
-
-        // 查找当前幻灯片的图片映射
-        for (const [key, value] of state.mediaMap.entries()) {
-          if (key.startsWith(slideImageKey)) {
-            newMediaTarget = value
-            break
-          }
-        }
-
-        // 如果没有找到带slideNumber的映射，尝试查找普通映射
-        if (!newMediaTarget) {
-          // 尝试使用最新添加的图片
-          const mediaValues = Array.from(state.mediaMap.values())
-          if (mediaValues.length > 0) {
-            newMediaTarget = mediaValues[mediaValues.length - 1]
-          }
-        }
-
-        if (newMediaTarget) {
-          // 确保路径是相对于幻灯片的正确相对路径
+        const mapKey = `slide${newSlideNumber}_main`
+        if (state.mediaMap.has(mapKey)) {
+          const newMediaTarget = state.mediaMap.get(mapKey)
+          // hero: 替换图片路径
           rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
           return rel
         }
       }
 
-      // 如果没有新的图片，使用模板中的图片
+      // 其他情况：复制模板原有图片
       const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
       const newMediaTarget = copyMediaFile({
         templateZip,
@@ -681,7 +663,7 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
       return rel
     }
 
-    // 其他引用（如 notes）直接复制
+    // 3️⃣ 其他关系（notes等）保持原样复制
     const absoluteTarget = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
     const newTarget = copyGenericPart({
       templateZip,
@@ -695,6 +677,7 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
     return rel
   })
 
+  // 写入新的关系文件
   outputZip.file(newRelsPath, buildRelationshipsXml(updated))
 }
 
@@ -1261,49 +1244,39 @@ function escapeRegex (str) {
 }
 
 /**
- * 在幻灯片中替换图片占位符
- * @param {string} slideXml - 幻灯片 XML 内容
- * @param {Object} image - 影像资料
- * @param {Object} state - 状态对象
- * @param {PizZip} outputZip - 输出 ZIP 对象
+ * 替换幻灯片中的图片占位符：
+ * 仅保存图片文件，并在 state.mediaMap 记录映射。
+ * 真正的关系 (rels) 由 cloneSlideRelationships 创建。
  */
 function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber) {
-  // 保存图片到输出 ZIP
-  let newImagePath
-  if (image.data) {
-    const ext = image.data.match(/data:image\/(\\w+);base64,/)?.[1] || 'png'
-    newImagePath = `ppt/media/image_${state.mediaCounter++}.${ext}`
-    const base64Data = image.data.replace(/^data:image\/\\w+;base64,/, '')
-    const buffer = Buffer.from(base64Data, 'base64')
-    outputZip.file(newImagePath, buffer)
-  } else if (image.fullPath) {
-    const ext = path.extname(image.fullPath) || '.png'
-    newImagePath = `ppt/media/image_${state.mediaCounter++}${ext}`
-    const buffer = fs.readFileSync(image.fullPath)
-    outputZip.file(newImagePath, buffer)
-  }
+  try {
+    // 生成唯一文件路径
+    const ext = path.extname(image.fullPath || '') || '.png'
+    const newImagePath = `ppt/media/image_${state.mediaCounter++}${ext}`
 
-  // 图片路径映射，使用唯一key
-  if (newImagePath) {
-    // 使用slideNumber作为key的一部分，确保每个幻灯片的图片都有唯一映射
-    const mapKey = `${slideNumber}_${image.data || image.fullPath}`
+    // 读入图片 Buffer
+    const buffer = image.data
+      ? Buffer.from(image.data.replace(/^data:image\/\w+;base64,/, ''), 'base64')
+      : fs.readFileSync(image.fullPath)
+
+    // 写入输出 Zip（如果 outputZip 可用）
+    if (outputZip) {
+      outputZip.file(newImagePath, buffer)
+    }
+
+    // 记录映射供 cloneSlideRelationships 使用
+    const mapKey = `slide${slideNumber}_main`
     state.mediaMap.set(mapKey, newImagePath)
-    // 同时保存一个简单映射，用于关系文件更新
-    state.mediaMap.set(image.data || image.fullPath, newImagePath)
-  }
 
-  // 更新slideXml中的图片引用
-  // 查找所有图片元素，确保它们有正确的rId
-  // 注意：PPTX中的图片通过<p:blip r:embed="rIdX"/>引用
-  let updatedXml = slideXml
-  const blipRegex = /<a:blip\s+r:embed="([^"]+)"\s*\/>/g
-  let match
-  while ((match = blipRegex.exec(slideXml))) {
-    // 我们不需要修改slideXml中的rId，因为关系文件会处理映射
-    // 但我们需要确保关系文件中的rId指向正确的图片
-  }
+    // 可选：如果模板文本中有 {{图片}} 占位符，则清理掉它
+    let updatedXml = slideXml
+    updatedXml = updatedXml.replace(/\{\{\s*图片\s*\}\}/g, '')
 
-  return updatedXml
+    return updatedXml
+  } catch (err) {
+    console.warn(`⚠️ 替换幻灯片图片失败：${err.message}`)
+    return slideXml
+  }
 }
 
 /**
@@ -1314,12 +1287,6 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
  * @param {Object} employee - 员工信息
  */
 async function copyTemplateSecondPageForImages (templatePath, outputPath, imageItems, employee) {
-  console.log("----------------------------------------")
-  console.log(templatePath)
-  console.log(outputPath)
-  console.log(imageItems)
-  console.log(employee)
-  console.log("----------------------------------------")
 
   const [templateBuffer, outputBuffer] = await Promise.all([
     fs.readFile(templatePath),
