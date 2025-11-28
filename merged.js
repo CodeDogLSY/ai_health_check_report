@@ -207,7 +207,7 @@ async function collectEmployeeAssets (employee, files) {
 
       // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
       let priority = 99 // 默认优先级
-      if (file.toLowerCase().includes('InBody')) {
+      if (file.toLowerCase().includes('inbody')) {
         priority = 1
       } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
         priority = 2
