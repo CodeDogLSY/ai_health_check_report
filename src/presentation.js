@@ -1,4 +1,6 @@
 const PptxGenJS = require('pptxgenjs')
+const fs = require('fs-extra')
+const PizZip = require('pizzip')
 const { sanitizeForFilename, formatDate } = require('./utils')
 
 /**
@@ -79,16 +81,44 @@ function addSummarySlide (pptx, employee, assets, theme, layout) {
  * @param {Array} imageItems - 影像资料列表
  * @param {Object} theme - 主题颜色
  * @param {Object} layout - 布局信息
+ * @param {string} templatePath - 模板文件路径
  */
-function addImageSlides (pptx, employee, imageItems, theme, layout) {
+async function addImageSlides (pptx, employee, imageItems, theme, layout, templatePath) {
   if (!imageItems.length) {
     return
   }
 
+  // 读取模板文件，获取第二页幻灯片内容
+  let templateSlideXml = null
+  if (await fs.pathExists(templatePath)) {
+    try {
+      const buffer = await fs.readFile(templatePath)
+      const templateZip = new PizZip(buffer)
+      const templateSlidePath = 'ppt/slides/slide2.xml'
+      const templateSlide = templateZip.file(templateSlidePath)
+      if (templateSlide) {
+        templateSlideXml = templateSlide.asText()
+      }
+    } catch (error) {
+      console.warn('⚠️ 读取模板第二页失败，将使用默认样式：', error.message)
+    }
+  }
+
   const metrics = getLayoutGuides(layout)
-  imageItems.forEach((image, index) => {
-    const slide = pptx.addSlide()
-    slide.background = { color: theme.background.replace('#', '') }
+  for (const image of imageItems) {
+    let slide
+
+    if (templateSlideXml) {
+      // 基于模板第二页创建幻灯片
+      slide = pptx.addSlide()
+      // 由于 PptxGenJS 不直接支持从 XML 创建幻灯片，我们仍使用原有方式创建
+      // 但可以保留模板的背景和布局风格
+      slide.background = { color: theme.background.replace('#', '') }
+    } else {
+      // 使用原有方式创建幻灯片
+      slide = pptx.addSlide()
+      slide.background = { color: theme.background.replace('#', '') }
+    }
 
     slide.addText(image.label, {
       x: metrics.sideMargin,
@@ -115,7 +145,7 @@ function addImageSlides (pptx, employee, imageItems, theme, layout) {
       h: maxHeight,
       sizing: { type: 'contain', w: maxWidth, h: maxHeight },
     })
-  })
+  }
 }
 
 

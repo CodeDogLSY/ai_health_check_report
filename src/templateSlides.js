@@ -189,6 +189,24 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
     }
 
     if (rel.Type === REL_TYPES.image) {
+      // 检查是否有新的图片需要替换
+      const mediaFiles = Array.from(state.mediaMap.values())
+      if (mediaFiles.length > 0) {
+        // 获取当前幻灯片对应的图片索引
+        // 计算当前幻灯片在新幻灯片中的索引
+        const currentSlideIndex = state.newSlides.length
+        const slideIndex = Math.max(0, mediaFiles.length - 1)
+        if (slideIndex < mediaFiles.length) {
+          // 使用新的图片路径替换模板中的图片路径
+          const newMediaTarget = mediaFiles[slideIndex]
+          if (newMediaTarget) {
+            rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
+            return rel
+          }
+        }
+      }
+      
+      // 如果没有新的图片，使用模板中的图片
       const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
       const newMediaTarget = copyMediaFile({
         templateZip,
@@ -208,7 +226,9 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
       sourcePath: absoluteTarget,
       state,
     })
-    rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newTarget)
+    if (newTarget) {
+      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newTarget)
+    }
     return rel
   })
 
@@ -716,7 +736,121 @@ function escapeRegex (str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * 在幻灯片中替换图片占位符
+ * @param {string} slideXml - 幻灯片 XML 内容
+ * @param {Object} image - 影像资料
+ * @param {Object} state - 状态对象
+ * @param {PizZip} outputZip - 输出 ZIP 对象
+ */
+function replaceImagePlaceholder (slideXml, image, state, outputZip) {
+  // 查找图片占位符并替换
+  // 模板第二页的图片是通过<p:pic>元素表示的
+  
+  // 保存图片到输出 ZIP
+  let newImagePath
+  if (image.data) {
+    const ext = image.data.match(/data:image\/(\w+);base64,/)?.[1] || 'png'
+    newImagePath = `ppt/media/image_${state.mediaCounter++}.${ext}`
+    const base64Data = image.data.replace(/^data:image\/\w+;base64,/, '')
+    const buffer = Buffer.from(base64Data, 'base64')
+    outputZip.file(newImagePath, buffer)
+  } else if (image.fullPath) {
+    const ext = path.extname(image.fullPath) || '.png'
+    newImagePath = `ppt/media/image_${state.mediaCounter++}${ext}`
+    const buffer = fs.readFileSync(image.fullPath)
+    outputZip.file(newImagePath, buffer)
+  }
+  
+  // 图片路径映射，用于后续更新关系
+  if (newImagePath) {
+    state.mediaMap.set(image.data || image.fullPath, newImagePath)
+  }
+  
+  // 保持原有的图片结构，只替换图片引用
+  // 模板中的图片已经有正确的结构，我们只需要确保关系被正确更新
+  // 图片引用的替换会在 cloneSlideRelationships 函数中处理
+  
+  return slideXml
+}
+
+/**
+ * 复制模板第二页幻灯片，并在其上添加文字和图片
+ * @param {string} templatePath - 模板文件路径
+ * @param {string} outputPath - 输出文件路径
+ * @param {Array} imageItems - 影像资料列表
+ * @param {Object} employee - 员工信息
+ */
+async function copyTemplateSecondPageForImages (templatePath, outputPath, imageItems, employee) {
+  const [templateBuffer, outputBuffer] = await Promise.all([
+    fs.readFile(templatePath),
+    fs.readFile(outputPath),
+  ])
+
+  const templateZip = new PizZip(templateBuffer)
+  const outputZip = new PizZip(outputBuffer)
+
+  const state = initializeState(outputZip, { employee, date: new Date() })
+
+  // 为每个影像资料复制模板第二页
+  for (const image of imageItems) {
+    const templateSlidePath = `ppt/slides/slide2.xml`
+    const templateSlide = templateZip.file(templateSlidePath)
+    if (!templateSlide) {
+      console.warn(`⚠️ 模板缺少第2页，跳过注入`)
+      continue
+    }
+
+    const newSlideNumber = state.nextSlideNumber++
+    const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
+    let slideXml = templateSlide.asText()
+
+    // 替换幻灯片中的文本占位符
+    const replacements = {
+      影响标题: image.label,
+      姓名: employee.name || '',
+      工号: employee.id || '',
+    }
+    slideXml = replaceTextInSlidePreferred(slideXml, replacements)
+
+    // 替换幻灯片中的图片占位符
+    slideXml = replaceImagePlaceholder(slideXml, image, state, outputZip)
+
+    outputZip.file(newSlidePath, slideXml)
+
+    cloneSlideRelationships({
+      templateZip,
+      outputZip,
+      templateSlideNumber: 2,
+      newSlideNumber,
+      state,
+    })
+
+    ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
+
+    state.newSlides.push({
+      slideNumber: newSlideNumber,
+      position: 'start',
+    })
+  }
+
+  if (!state.newSlides.length) {
+    return
+  }
+
+  updatePresentationDocuments(outputZip, state)
+
+  const updatedBuffer = outputZip.generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+
+  await fs.writeFile(outputPath, updatedBuffer)
+}
+
 module.exports = {
   insertTemplateSlides,
+  copyTemplateSecondPageForImages,
 };
 

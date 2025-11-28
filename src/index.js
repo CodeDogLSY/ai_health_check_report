@@ -14,10 +14,9 @@ const { safeReadDir, collectEmployeeAssets, buildImageItems } = require('./asset
 const {
   initializePresentation,
   addSummarySlide,
-  addImageSlides,
   buildReportFileName,
 } = require('./presentation')
-const { insertTemplateSlides } = require('./templateSlides')
+const { insertTemplateSlides, copyTemplateSecondPageForImages } = require('./templateSlides')
 
 /**
  * 主入口：读取员工资料并批量生成 PPT 报告。
@@ -64,15 +63,19 @@ async function main () {
 
       const pptx = initializePresentation(layout)
 
-      const imageItems = await buildImageItems(assetInfo, employee)
-      addImageSlides(pptx, employee, imageItems, theme, layout)
-
       // // 将体检总结放到最后
       // addSummarySlide(pptx, employee, assetInfo, theme, layout)
 
       const outputName = buildReportFileName(employee)
       const outputPath = path.join(OUTPUT_DIR, outputName)
       await pptx.writeFile({ fileName: outputPath })
+      
+      // 为每个影像资料复制模板第二页
+      const imageItems = await buildImageItems(assetInfo, employee)
+      if (imageItems.length > 0) {
+        await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
+      }
+      
       await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date() })
 
       successReports.push({ employee, outputPath })
