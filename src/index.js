@@ -67,8 +67,8 @@ async function main () {
       const imageItems = await buildImageItems(assetInfo, employee)
       addImageSlides(pptx, employee, imageItems, theme, layout)
 
-      // 将体检总结放到最后
-      addSummarySlide(pptx, employee, assetInfo, theme, layout)
+      // // 将体检总结放到最后
+      // addSummarySlide(pptx, employee, assetInfo, theme, layout)
 
       const outputName = buildReportFileName(employee)
       const outputPath = path.join(OUTPUT_DIR, outputName)
