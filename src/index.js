@@ -67,12 +67,12 @@ async function main() {
 
       const pptx = initializePresentation(layout);
       addCoverSlide(pptx, employee, assetInfo, theme, layout);
-      addOverviewSlide(pptx, employee, assetInfo, theme, layout);
-      addSummarySlide(pptx, employee, assetInfo, theme, layout);
 
       const imageItems = await buildImageItems(assetInfo, employee);
       addImageSlides(pptx, employee, imageItems, theme, layout);
-      addDocumentSlide(pptx, employee, assetInfo.attachments, theme, layout);
+      
+      // 将体检总结放到最后
+      addSummarySlide(pptx, employee, assetInfo, theme, layout);
 
       const outputName = buildReportFileName(employee);
       const outputPath = path.join(OUTPUT_DIR, outputName);
