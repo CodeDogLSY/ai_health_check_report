@@ -51,14 +51,31 @@ async function collectEmployeeAssets(employee, files) {
       const ext = path.extname(file).toLowerCase();
       const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other';
       const label = buildAttachmentLabel(file);
+      
+      // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
+      let priority = 99; // 默认优先级
+      if (file.toLowerCase().includes('inbody')) {
+        priority = 1;
+      } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
+        priority = 2;
+      } else if (file.toLowerCase().includes('血检')) {
+        priority = 3;
+      } else if (file.toLowerCase().includes('心电图')) {
+        priority = 4;
+      } else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
+        priority = 5;
+      }
+      
       return {
         fileName: file,
         fullPath: path.join(DATA_DIR, file),
         label,
         type,
         ext,
+        priority,
       };
-    });
+    })
+    .sort((a, b) => a.priority - b.priority);
 
   return {
     employee,
@@ -93,17 +110,21 @@ function buildAttachmentLabel(fileName) {
  * 将图片和 PDF（转换为图片）统筹为 PPT 可用素材。
  */
 async function buildImageItems(assetInfo, employee) {
-  const imageItems = assetInfo.attachments
-    .filter((item) => item.type === 'image')
-    .map((item) => ({
-      label: item.label,
-      fullPath: item.fullPath,
-    }));
+  const imageItems = [];
 
-  const pdfAttachments = assetInfo.attachments.filter((item) => item.type === 'pdf');
-  for (const pdf of pdfAttachments) {
-    const converted = await convertPdfAttachment(pdf, employee);
-    imageItems.push(...converted);
+  // 按照附件的优先级顺序处理每个附件
+  for (const attachment of assetInfo.attachments) {
+    if (attachment.type === 'image') {
+      // 图片类型直接添加
+      imageItems.push({
+        label: attachment.label,
+        fullPath: attachment.fullPath,
+      });
+    } else if (attachment.type === 'pdf') {
+      // PDF类型转换为图片后添加
+      const converted = await convertPdfAttachment(attachment, employee);
+      imageItems.push(...converted);
+    }
   }
 
   return imageItems;
