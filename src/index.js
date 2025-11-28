@@ -76,7 +76,7 @@ async function main () {
         await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
       }
       
-      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date() })
+      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
 
       successReports.push({ employee, outputPath })
       console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`)

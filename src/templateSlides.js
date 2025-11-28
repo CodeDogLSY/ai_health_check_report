@@ -145,6 +145,14 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
     slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date)
   }
 
+  // 如果是模板第三页，替换{{总结}}占位符
+  if (templateSlideNumber === 3 && options.summary) {
+    const replacements = {
+      总结: options.summary,
+    }
+    slideXml = replaceTextInSlidePreferred(slideXml, replacements)
+  }
+
   outputZip.file(newSlidePath, slideXml)
 
   cloneSlideRelationships({
