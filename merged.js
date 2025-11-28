@@ -422,6 +422,21 @@ async function main () {
         outputZip.file(slide3Path, slide3Xml)
       }
 
+      // --- 3) handle slide4.xml ---
+      const slide4Path = 'ppt/slides/slide4.xml'
+      if (outputZip.file(slide4Path)) {
+        let slide4Xml = outputZip.file(slide4Path).asText()
+        // 添加slide4的替换逻辑，替换姓名、工号等信息
+        const replacements = {
+          姓名: emp.name || '',
+          工号: emp.id || '',
+          性别: emp.gender || '',
+          年龄: emp.age || '',
+        }
+        slide4Xml = replaceTextInSlidePreferred(slide4Xml, replacements)
+        outputZip.file(slide4Path, slide4Xml)
+      }
+
       // --- 3) find template slide2 and its rels & create copies per image item ---
       const templateSlideNumber = 2
       const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
@@ -436,26 +451,28 @@ async function main () {
         const templateRels = templateSlideRelsXml ? parseRelationships(templateSlideRelsXml) : []
 
         // determine where to insert new slide ids in presentation.xml:
-        // find the existing <p:sldId> that references slides/slide2.xml and insert after it
+        // find the existing <p:sldId> that references slides/slide1.xml and insert after it
         const presMatch = outputZip.file('ppt/presentation.xml').asText()
         let sldIdListMatch = presMatch.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
         let sldIdListInner = sldIdListMatch ? sldIdListMatch[1] : ''
         const presRelsXml = outputZip.file('ppt/_rels/presentation.xml.rels').asText()
-        // find rId that points to slide2
+        // find rId that points to slide1
         const presRels = parseRelationships(presRelsXml)
+        let slide1Rid = null
         let slide2Rid = null
         for (const rel of presRels) {
-          if (rel.Target && rel.Target.replace(/^\/?/, '') === `slides/slide${templateSlideNumber}.xml`) {
+          if (rel.Target && rel.Target.replace(/^\/?/, '') === `slides/slide1.xml`) {
+            slide1Rid = rel.Id
+          } else if (rel.Target && rel.Target.replace(/^\/?/, '') === `slides/slide${templateSlideNumber}.xml`) {
             slide2Rid = rel.Id
-            break
           }
         }
-        // find the index in sldIdListInner where r:id="slide2Rid"
+        // find the index in sldIdListInner where r:id="slide1Rid"
         const sldIdLines = sldIdListInner.split('\n').map(l => l.trim()).filter(Boolean)
         let insertIndex = -1
-        if (slide2Rid) {
+        if (slide1Rid) {
           for (let i = 0; i < sldIdLines.length; i++) {
-            if (sldIdLines[i].includes(`r:id="${slide2Rid}"`)) {
+            if (sldIdLines[i].includes(`r:id="${slide1Rid}"`)) {
               insertIndex = i + 1
               break
             }
@@ -551,20 +568,41 @@ async function main () {
           newSlideRelsToAppend.push(`  <Relationship Id="${newRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${newSlideNumber}.xml"/>`)
         }
 
-        // 5) update presentation.xml: insert new <p:sldId> entries after the determined index
+        // 5) update presentation.xml: insert new <p:sldId> entries after the determined index and remove original slide2
         // read current presContent
         let presContent = outputZip.file('ppt/presentation.xml').asText()
         let sldIdMatch = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/)
-        const currentInner = sldIdMatch ? sldIdMatch[1].trim().split('\n').map(l => l.trim()).filter(Boolean) : []
+        let currentInner = sldIdMatch ? sldIdMatch[1].trim().split('\n').map(l => l.trim()).filter(Boolean) : []
+
+        // keep original slide1, slide3, slide4 entries
+        // only remove original slide2 entry from currentInner
+        currentInner = currentInner.filter(line => !line.includes(`r:id="${slide2Rid}"`))
+
         // build new entries
         const newEntriesXml = newSlideEntries.map((s) => `    <p:sldId id="${s.slideId}" r:id="${s.relId}"/>`)
-        // insert at insertIndex
-        const combined = [...currentInner.slice(0, insertIndex), ...newEntriesXml, ...currentInner.slice(insertIndex)]
-        const newSldIdLst = `<p:sldIdLst>\n${combined.join('\n')}\n</p:sldIdLst>`
+
+        // insert new entries after slide1
+        let finalSldIdLines = []
+        let inserted = false
+        for (const line of currentInner) {
+          finalSldIdLines.push(line)
+          // if this is slide1, insert new entries after it
+          if (line.includes(`r:id="${slide1Rid}"`)) {
+            finalSldIdLines.push(...newEntriesXml)
+            inserted = true
+          }
+        }
+
+        // if slide1 not found, append new entries at the end
+        if (!inserted) {
+          finalSldIdLines.push(...newEntriesXml)
+        }
+
+        const newSldIdLst = `<p:sldIdLst>\n${finalSldIdLines.join('\n')}\n</p:sldIdLst>`
         presContent = presContent.replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, newSldIdLst)
         outputZip.file('ppt/presentation.xml', presContent)
 
-        // 6) update presentation.xml.rels: append new Relationship lines before </Relationships>
+        // 6) update presentation.xml.rels: append new Relationship lines before </Relationships> and keep original slide1, slide3, slide4 relationships
         let presRelsContent = outputZip.file('ppt/_rels/presentation.xml.rels').asText()
         const insertPos = presRelsContent.lastIndexOf('</Relationships>')
         presRelsContent = presRelsContent.slice(0, insertPos) + '\n' + newSlideRelsToAppend.join('\n') + '\n' + presRelsContent.slice(insertPos)
