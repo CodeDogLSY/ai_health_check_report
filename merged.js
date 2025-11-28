@@ -25,16 +25,6 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp'])
 const PDF_EXTENSIONS = new Set(['.pdf'])
 const EMU_PER_INCH = 914400
 
-const DEFAULT_THEME = {
-  primary: '#4472C4',
-  secondary: '#ED7D31',
-  neutral: '#A5A5A5',
-  highlight: '#FFC000',
-  textDark: '#000000',
-  textLight: '#FFFFFF',
-  background: '#F7F9FC',
-}
-
 const DEFAULT_LAYOUT = {
   width: 10,
   height: 5.625,
@@ -91,53 +81,6 @@ async function resolveExistingPath (candidates, label) {
 }
 
 // ==================== loaders.js ====================
-/**
- * 从 PPT 模板中提取主题配色，找不到则返回默认主题。
- */
-async function loadThemeColors (templatePath) {
-  if (!(await fs.pathExists(templatePath))) {
-    console.warn('⚠️ 未找到模板文件，使用默认颜色。')
-    return DEFAULT_THEME
-  }
-
-  try {
-    const buffer = await fs.readFile(templatePath)
-    const zip = new PizZip(buffer)
-    const themeFile = zip.file('ppt/theme/theme1.xml')
-
-    if (!themeFile) {
-      return DEFAULT_THEME
-    }
-
-    const xml = themeFile.asText()
-    const colors = {
-      accent1: extractHex(xml, 'accent1'),
-      accent2: extractHex(xml, 'accent2'),
-      accent3: extractHex(xml, 'accent3'),
-      accent4: extractHex(xml, 'accent4'),
-      accent5: extractHex(xml, 'accent5'),
-      accent6: extractHex(xml, 'accent6'),
-      dk1: extractHex(xml, 'dk1'),
-      lt1: extractHex(xml, 'lt1'),
-      lt2: extractHex(xml, 'lt2'),
-    }
-
-    return {
-      primary: buildColor(colors.accent1, DEFAULT_THEME.primary),
-      secondary: buildColor(colors.accent2, DEFAULT_THEME.secondary),
-      neutral: buildColor(colors.accent3, DEFAULT_THEME.neutral),
-      highlight: buildColor(colors.accent4, DEFAULT_THEME.highlight),
-      accent5: buildColor(colors.accent5, '#5B9BD5'),
-      accent6: buildColor(colors.accent6, '#70AD47'),
-      textDark: buildColor(colors.dk1, DEFAULT_THEME.textDark),
-      textLight: buildColor(colors.lt1, DEFAULT_THEME.textLight),
-      background: buildColor(colors.lt2, DEFAULT_THEME.background),
-    }
-  } catch (error) {
-    console.warn(`⚠️ 读取模板主题失败，将使用默认颜色。原因：${error.message}`)
-    return DEFAULT_THEME
-  }
-}
 
 /**
  * 解析 PPT 模板的宽高布局信息。
@@ -218,36 +161,15 @@ async function loadEmployees (sheetPath) {
 
     employees.push({
       name,
-      id: normalizeText(record['工号'] || record['员工工号'] || record['编号']) || '未知',
+      sex: normalizeText(record['性别']) || '未知',
+      age: normalizeText(record['年龄']) || '未知',
+      id: normalizeText(record['证件号']) || '未知',
+      date: normalizeText(record['体检日期']) || '未知',
       raw: record,
     })
   })
 
   return employees
-}
-
-function extractHex (xml, tag) {
-  const srgbRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr[^>]*?val="([0-9A-F]{6})"`, 'i')
-  const sysRegex = new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*?lastClr="([0-9A-F]{6})"`, 'i')
-
-  const srgbMatch = xml.match(srgbRegex)
-  if (srgbMatch) {
-    return srgbMatch[1]
-  }
-
-  const sysMatch = xml.match(sysRegex)
-  if (sysMatch) {
-    return sysMatch[1]
-  }
-
-  return null
-}
-
-function buildColor (value, fallback) {
-  if (!value) {
-    return fallback
-  }
-  return `#${value.toUpperCase()}`
 }
 
 // ==================== assets.js ====================
@@ -285,16 +207,19 @@ async function collectEmployeeAssets (employee, files) {
 
       // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
       let priority = 99 // 默认优先级
-      if (file.toLowerCase().includes('inbody')) {
+      if (file.toLowerCase().includes('InBody')) {
         priority = 1
       } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
         priority = 2
-      } else if (file.toLowerCase().includes('血检')) {
+      } else if (file.toLowerCase().includes('血常规')) {
         priority = 3
       } else if (file.toLowerCase().includes('心电图')) {
         priority = 4
-      } else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
+      } else if (file.toLowerCase().includes('生化检查')) {
         priority = 5
+      }
+      else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
+        priority = 6
       }
 
       return {
@@ -507,80 +432,6 @@ function addSummarySlide (pptx, employee, assets, theme, layout) {
     h: layout.height - metrics.topMargin - metrics.bottomMargin - 1,
     lineSpacingMultiple: 1.2,
   })
-}
-
-/**
- * 添加影像资料幻灯片
- * @param {Object} pptx - PptxGenJS 实例
- * @param {Object} employee - 员工信息
- * @param {Array} imageItems - 影像资料列表
- * @param {Object} theme - 主题颜色
- * @param {Object} layout - 布局信息
- * @param {string} templatePath - 模板文件路径
- */
-async function addImageSlides (pptx, employee, imageItems, theme, layout, templatePath) {
-  if (!imageItems.length) {
-    return
-  }
-
-  // 读取模板文件，获取第二页幻灯片内容
-  let templateSlideXml = null
-  if (await fs.pathExists(templatePath)) {
-    try {
-      const buffer = await fs.readFile(templatePath)
-      const templateZip = new PizZip(buffer)
-      const templateSlidePath = 'ppt/slides/slide2.xml'
-      const templateSlide = templateZip.file(templateSlidePath)
-      if (templateSlide) {
-        templateSlideXml = templateSlide.asText()
-      }
-    } catch (error) {
-      console.warn('⚠️ 读取模板第二页失败，将使用默认样式：', error.message)
-    }
-  }
-
-  const metrics = getLayoutGuides(layout)
-  for (const image of imageItems) {
-    let slide
-
-    if (templateSlideXml) {
-      // 基于模板第二页创建幻灯片
-      slide = pptx.addSlide()
-      // 由于 PptxGenJS 不直接支持从 XML 创建幻灯片，我们仍使用原有方式创建
-      // 但可以保留模板的背景和布局风格
-      slide.background = { color: theme.background.replace('#', '') }
-    } else {
-      // 使用原有方式创建幻灯片
-      slide = pptx.addSlide()
-      slide.background = { color: theme.background.replace('#', '') }
-    }
-
-    slide.addText(image.label, {
-      x: metrics.sideMargin,
-      y: metrics.topMargin,
-      w: metrics.contentWidth,
-      fontSize: layout.orientation === 'portrait' ? 26 : 22,
-      bold: true,
-      color: theme.primary.replace('#', ''),
-    })
-
-    const imagePayload = image.data
-      ? { data: image.data }
-      : { path: image.fullPath }
-
-    const imageTop = metrics.topMargin + 0.4
-    const maxWidth = metrics.contentWidth
-    const maxHeight = Math.max(3, layout.height - imageTop - metrics.bottomMargin)
-
-    slide.addImage({
-      ...imagePayload,
-      x: metrics.sideMargin,
-      y: imageTop,
-      w: maxWidth,
-      h: maxHeight,
-      sizing: { type: 'contain', w: maxWidth, h: maxHeight },
-    })
-  }
 }
 
 function chunkText (text, chunkSize) {
@@ -1590,7 +1441,6 @@ async function main () {
 
   // 3) 读取模板布局、配色以及员工数据。
   const layout = await loadTemplateLayout(templatePath)
-  const theme = await loadThemeColors(templatePath)
   const employees = await loadEmployees(sheetPath)
 
   if (!employees.length) {
