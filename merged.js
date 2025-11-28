@@ -390,50 +390,6 @@ function getLayoutGuides (layout) {
   return { sideMargin, topMargin, bottomMargin, contentWidth }
 }
 
-
-
-/**
- * 添加体检总结幻灯片
- * @param {Object} pptx - PptxGenJS 实例
- * @param {Object} employee - 员工信息
- * @param {Object} assets - 员工资产信息
- * @param {Object} theme - 主题颜色
- * @param {Object} layout - 布局信息
- */
-function addSummarySlide (pptx, employee, assets, theme, layout) {
-  const slide = pptx.addSlide()
-  slide.background = { color: theme.background.replace('#', '') }
-
-  const metrics = getLayoutGuides(layout)
-  slide.addText(`${employee.name} · 体检总结`, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin,
-    w: metrics.contentWidth,
-    fontSize: layout.orientation === 'portrait' ? 28 : 24,
-    bold: true,
-    color: theme.primary.replace('#', ''),
-  })
-
-  const summary = assets.summaryText || '暂无总结，请补充。'
-  const paragraphs = chunkText(summary, 120)
-  const textRuns = paragraphs.map((paragraph) => ({
-    text: paragraph,
-    options: {
-      bullet: true,
-      color: theme.textDark.replace('#', ''),
-      fontSize: 18,
-    },
-  }))
-
-  slide.addText(textRuns, {
-    x: metrics.sideMargin,
-    y: metrics.topMargin + 0.8,
-    w: metrics.contentWidth,
-    h: layout.height - metrics.topMargin - metrics.bottomMargin - 1,
-    lineSpacingMultiple: 1.2,
-  })
-}
-
 function chunkText (text, chunkSize) {
   if (!text) return []
   const paragraphs = text.split('\n').filter(Boolean)
@@ -1358,6 +1314,13 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
  * @param {Object} employee - 员工信息
  */
 async function copyTemplateSecondPageForImages (templatePath, outputPath, imageItems, employee) {
+  console.log("----------------------------------------")
+  console.log(templatePath)
+  console.log(outputPath)
+  console.log(imageItems)
+  console.log(employee)
+  console.log("----------------------------------------")
+
   const [templateBuffer, outputBuffer] = await Promise.all([
     fs.readFile(templatePath),
     fs.readFile(outputPath),
@@ -1469,9 +1432,6 @@ async function main () {
       }
 
       const pptx = initializePresentation(layout)
-
-      // // 将体检总结放到最后
-      // addSummarySlide(pptx, employee, assetInfo, theme, layout)
 
       const outputName = buildReportFileName(employee)
       const outputPath = path.join(OUTPUT_DIR, outputName)
