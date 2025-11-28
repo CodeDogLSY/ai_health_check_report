@@ -205,7 +205,7 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
           }
         }
       }
-      
+
       // 如果没有新的图片，使用模板中的图片
       const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
       const newMediaTarget = copyMediaFile({
@@ -746,7 +746,7 @@ function escapeRegex (str) {
 function replaceImagePlaceholder (slideXml, image, state, outputZip) {
   // 查找图片占位符并替换
   // 模板第二页的图片是通过<p:pic>元素表示的
-  
+
   // 保存图片到输出 ZIP
   let newImagePath
   if (image.data) {
@@ -761,16 +761,16 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip) {
     const buffer = fs.readFileSync(image.fullPath)
     outputZip.file(newImagePath, buffer)
   }
-  
+
   // 图片路径映射，用于后续更新关系
   if (newImagePath) {
     state.mediaMap.set(image.data || image.fullPath, newImagePath)
   }
-  
+
   // 保持原有的图片结构，只替换图片引用
   // 模板中的图片已经有正确的结构，我们只需要确保关系被正确更新
   // 图片引用的替换会在 cloneSlideRelationships 函数中处理
-  
+
   return slideXml
 }
 
@@ -807,7 +807,7 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
 
     // 替换幻灯片中的文本占位符
     const replacements = {
-      影响标题: image.label,
+      影像标题: image.label,
       姓名: employee.name || '',
       工号: employee.id || '',
     }
