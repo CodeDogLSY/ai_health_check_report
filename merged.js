@@ -219,6 +219,17 @@ async function collectEmployeeAssets (employee, files) {
         priority = 6
       }
 
+      // 分类：用于将不同资料放入不同模板页
+      let category = 'other'
+      const lower = file.toLowerCase()
+      if (lower.includes('inbody')) {
+        category = 'inbody'
+      } else if (lower.includes('心电图')) {
+        category = 'ecg'
+      } else if (lower.includes('尿常规') || lower.includes('尿检') || lower.includes('血常规') || lower.includes('生化检查')) {
+        category = 'lab'
+      }
+
       return {
         fileName: file,
         fullPath: path.join(DATA_DIR, file),
@@ -226,6 +237,7 @@ async function collectEmployeeAssets (employee, files) {
         type,
         ext,
         priority,
+        category,
       }
     })
     .sort((a, b) => a.priority - b.priority)
@@ -272,6 +284,7 @@ async function buildImageItems (assetInfo, employee) {
       imageItems.push({
         label: attachment.label,
         fullPath: attachment.fullPath,
+        category: attachment.category,
       })
     } else if (attachment.type === 'pdf') {
       // PDF类型转换为图片后添加
@@ -294,10 +307,11 @@ async function convertPdfAttachment (pdfAttachment, employee) {
 
     const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
     if (pdfImgPages.length) {
-      return pdfImgPages
+      return pdfImgPages.map((p) => ({ ...p, category: pdfAttachment.category }))
     }
 
-    return convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+    const pages = await convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+    return pages.map((p) => ({ ...p, category: pdfAttachment.category }))
   } catch (error) {
     console.warn(`⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`)
     return []
@@ -437,8 +451,9 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
 
   const slidesToCopy = [
     { templateSlide: 1, position: 'start' },
-    { templateSlide: 3, position: 'end' },
-    { templateSlide: 4, position: 'end' },
+    { templateSlide: 5, position: 'end' },
+    { templateSlide: 6, position: 'end' },
+    { templateSlide: 7, position: 'end' },
   ]
 
   const state = initializeState(outputZip, options)
@@ -584,8 +599,8 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
     slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date)
   }
 
-  // 如果是模板第三页，替换{{总结}}占位符
-  if (templateSlideNumber === 3 && options.summary) {
+  // 如果是模板第5页（AI总结），替换{{总结}}占位符
+  if (templateSlideNumber === 5 && options.summary) {
     const replacements = {
       总结: options.summary,
     }
@@ -637,18 +652,15 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
 
     // 2️⃣ 图片（重点更新）
     if (rel.Type === REL_TYPES.image) {
-      // 如果是模板第2页，则尝试使用新的图片映射
-      if (templateSlideNumber === 2) {
-        const mapKey = `slide${newSlideNumber}_main`
-        if (state.mediaMap.has(mapKey)) {
-          const newMediaTarget = state.mediaMap.get(mapKey)
-          // hero: 替换图片路径
-          rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
-          return rel
-        }
+      // 优先使用当前新幻灯片的图片映射
+      const mapKey = `slide${newSlideNumber}_main`
+      if (state.mediaMap.has(mapKey)) {
+        const newMediaTarget = state.mediaMap.get(mapKey)
+        rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
+        return rel
       }
 
-      // 其他情况：复制模板原有图片
+      // 回退：复制模板原有图片资源
       const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
       const newMediaTarget = copyMediaFile({
         templateZip,
@@ -1295,12 +1307,14 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
 
   const state = initializeState(outputZip, { employee, date: new Date() })
 
-  // 为每个影像资料复制模板第二页
+  // 为每个影像资料复制对应的模板页
   for (const image of imageItems) {
-    const templateSlidePath = `ppt/slides/slide2.xml`
+    const cat = image.category || 'other'
+    const templateSlideNumber = cat === 'inbody' ? 2 : cat === 'lab' ? 3 : cat === 'ecg' ? 4 : 3
+    const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
     const templateSlide = templateZip.file(templateSlidePath)
     if (!templateSlide) {
-      console.warn(`⚠️ 模板缺少第2页，跳过注入`)
+      console.warn(`⚠️ 模板缺少第${templateSlideNumber}页，跳过注入`)
       continue
     }
 
@@ -1323,7 +1337,7 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
     cloneSlideRelationships({
       templateZip,
       outputZip,
-      templateSlideNumber: 2,
+      templateSlideNumber,
       newSlideNumber,
       state,
     })
