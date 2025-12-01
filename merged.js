@@ -38,19 +38,19 @@ function normalizeName (value, id = '') {
     .replace(/\.[^.]+$/, '') // 移除文件扩展名
     .replace(/\s+/g, '') // 移除所有空格
     .toLowerCase() // 转换为小写
-  
+
   // 如果提供了id（员工信息），则返回"姓名+证件号"格式
   if (id) {
     return (normalized + id.toLowerCase()).replace(/\s+/g, '')
   }
-  
+
   // 对于文件名，提取"姓名-证件号"部分
   // 匹配模式：姓名-证件号-...
   const match = normalized.match(/^([^-]+)-([^-]+)/)
   if (match) {
     return match[1] + match[2] // 返回"姓名+证件号"格式
   }
-  
+
   // 兼容旧格式，只返回姓名
   return normalized.replace(/[-_].*$/, '')
 }
@@ -433,9 +433,13 @@ function chunkText (text, chunkSize) {
   return chunks.length ? chunks : ['暂无内容']
 }
 
-function buildReportFileName (employee) {
-  const safeName = sanitizeForFilename(`${employee.name}_${employee.id}`)
-  return `员工体检报告_${safeName}_${formatDate(new Date())}.pptx`
+function buildReportFileName (employee, suffix = '') {
+  const safeName = sanitizeForFilename(employee.name)
+  const dateStr = formatDate(new Date())
+  if (suffix) {
+    return `员工体检报告_${safeName}${suffix}_${dateStr}.pptx`
+  }
+  return `员工体检报告_${safeName}_${dateStr}.pptx`
 }
 
 // ==================== templateSlides.js ====================
@@ -1405,6 +1409,7 @@ async function main () {
   const availableFiles = await safeReadDir(DATA_DIR)
   const successReports = []
   const skippedEmployees = []
+  const nameCounter = new Map() // 跟踪每个姓名生成的报告数量
 
   // 4) 针对每位员工构建个性化报告。
   for (const employee of employees) {
@@ -1424,8 +1429,15 @@ async function main () {
 
       const pptx = initializePresentation(layout)
 
-      const outputName = buildReportFileName(employee)
+      // 生成唯一文件名，重名时添加数字后缀
+      const currentCount = nameCounter.get(employee.name) || 0
+      const suffix = currentCount > 0 ? `_${currentCount}` : ''
+      const outputName = buildReportFileName(employee, suffix)
       const outputPath = path.join(OUTPUT_DIR, outputName)
+
+      // 更新计数器
+      nameCounter.set(employee.name, currentCount + 1)
+
       await pptx.writeFile({ fileName: outputPath })
 
       // 为每个影像资料复制模板第二页
