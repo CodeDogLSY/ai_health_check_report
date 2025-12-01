@@ -11,7 +11,6 @@ const crypto = require('crypto')
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
-// ==================== config.js ====================
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
 const OUTPUT_DIR = path.join(ROOT, 'output')
@@ -31,7 +30,6 @@ const DEFAULT_LAYOUT = {
   orientation: 'landscape',
 }
 
-// ==================== utils.js ====================
 function normalizeName (value, id = '') {
   if (!value) return ''
 
@@ -91,8 +89,6 @@ async function resolveExistingPath (candidates, label) {
   }
   throw new Error(`${label}缺失，请确认以下文件之一存在：${candidates.join(', ')}`)
 }
-
-// ==================== loaders.js ====================
 
 /**
  * 解析 PPT 模板的宽高布局信息。
@@ -184,7 +180,6 @@ async function loadEmployees (sheetPath) {
   return employees
 }
 
-// ==================== assets.js ====================
 /**
  * 读取数据目录，若不存在则返回空数组。
  */
@@ -392,7 +387,6 @@ async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
   }
 }
 
-// ==================== presentation.js ====================
 /**
  * 初始化 PPT 文档及基础元数据。
  */
@@ -421,7 +415,6 @@ function buildReportFileName (employee, suffix = '') {
   return `员工体检报告_${safeName}_${dateStr}.pptx`
 }
 
-// ==================== templateSlides.js ====================
 const CONTENT_TYPES = {
   slide: 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml',
   slideLayout: 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
@@ -1353,7 +1346,6 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
   await fs.writeFile(outputPath, updatedBuffer)
 }
 
-// ==================== index.js ====================
 /**
  * 主入口：读取员工资料并批量生成 PPT 报告。
  */
