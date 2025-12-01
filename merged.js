@@ -32,13 +32,27 @@ const DEFAULT_LAYOUT = {
 }
 
 // ==================== utils.js ====================
-function normalizeName (value) {
+function normalizeName (value, id = '') {
   if (!value) return ''
-  return String(value)
-    .replace(/\.[^.]+$/, '')
-    .replace(/[-_].*$/, '')
-    .replace(/\s+/g, '')
-    .toLowerCase()
+  let normalized = String(value)
+    .replace(/\.[^.]+$/, '') // 移除文件扩展名
+    .replace(/\s+/g, '') // 移除所有空格
+    .toLowerCase() // 转换为小写
+  
+  // 如果提供了id（员工信息），则返回"姓名+证件号"格式
+  if (id) {
+    return (normalized + id.toLowerCase()).replace(/\s+/g, '')
+  }
+  
+  // 对于文件名，提取"姓名-证件号"部分
+  // 匹配模式：姓名-证件号-...
+  const match = normalized.match(/^([^-]+)-([^-]+)/)
+  if (match) {
+    return match[1] + match[2] // 返回"姓名+证件号"格式
+  }
+  
+  // 兼容旧格式，只返回姓名
+  return normalized.replace(/[-_].*$/, '')
 }
 
 function normalizeText (value) {
@@ -185,7 +199,7 @@ async function safeReadDir (dir) {
  * 为单个员工收集所有匹配的资料文件。
  */
 async function collectEmployeeAssets (employee, files) {
-  const normalized = normalizeName(employee.name)
+  const normalized = normalizeName(employee.name, employee.id)
   const matchingFiles = files.filter((file) => normalizeName(file) === normalized)
 
   const summaryFile = matchingFiles.find(
