@@ -219,7 +219,7 @@ async function collectEmployeeAssets (employee, files) {
 
       const lower = file.toLowerCase()
 
-      // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
+      // 确定文件优先级，按照 inbody、尿检、血检、生化检查、糖化血红蛋白、心电图、AI解读的顺序
       let priority = 99 // 默认优先级
       if (lower.includes('inbody')) {
         priority = 1
@@ -227,12 +227,14 @@ async function collectEmployeeAssets (employee, files) {
         priority = 2
       } else if (lower.includes('血常规')) {
         priority = 3
-      } else if (lower.includes('心电图')) {
-        priority = 4
       } else if (lower.includes('生化检查')) {
+        priority = 4
+      } else if (lower.includes('糖化血红蛋白')) {
         priority = 5
-      } else if (lower.includes('ai解读')) {
+      } else if (lower.includes('心电图')) {
         priority = 6
+      } else if (lower.includes('ai解读')) {
+        priority = 7
       }
 
       // 分类：用于将不同资料放入不同模板页
@@ -241,7 +243,7 @@ async function collectEmployeeAssets (employee, files) {
         category = 'inbody'
       } else if (lower.includes('心电图')) {
         category = 'ecg'
-      } else if (lower.includes('尿常规') || lower.includes('尿检') || lower.includes('血常规') || lower.includes('生化检查')) {
+      } else if (lower.includes('尿常规') || lower.includes('尿检') || lower.includes('血常规') || lower.includes('生化检查') || lower.includes('糖化血红蛋白')) {
         category = 'lab'
       }
 
