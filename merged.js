@@ -439,6 +439,12 @@ function initializePresentation (layout) {
   return pptx
 }
 
+/**
+ * 输出ppt-命名
+ * @param {*} employee 
+ * @param {*} suffix 
+ * @returns 
+ */
 function buildReportFileName (employee, suffix = '') {
   const safeName = sanitizeForFilename(employee.name)
   const dateStr = formatDate(new Date())
