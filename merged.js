@@ -408,32 +408,6 @@ function initializePresentation (layout) {
   return pptx
 }
 
-function getLayoutGuides (layout) {
-  const sideMargin = Number((layout.width * 0.08).toFixed(3))
-  const topMargin = Number((layout.height * 0.05).toFixed(3))
-  const bottomMargin = Number((layout.height * 0.06).toFixed(3))
-  const contentWidth = Number((layout.width - sideMargin * 2).toFixed(3))
-  return { sideMargin, topMargin, bottomMargin, contentWidth }
-}
-
-function chunkText (text, chunkSize) {
-  if (!text) return []
-  const paragraphs = text.split('\n').filter(Boolean)
-  const chunks = []
-
-  paragraphs.forEach((paragraph) => {
-    if (paragraph.length <= chunkSize) {
-      chunks.push(paragraph)
-    } else {
-      for (let i = 0; i < paragraph.length; i += chunkSize) {
-        chunks.push(paragraph.slice(i, i + chunkSize))
-      }
-    }
-  })
-
-  return chunks.length ? chunks : ['暂无内容']
-}
-
 function buildReportFileName (employee, suffix = '') {
   const safeName = sanitizeForFilename(employee.name)
   const dateStr = formatDate(new Date())
