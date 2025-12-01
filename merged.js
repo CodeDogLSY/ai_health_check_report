@@ -1130,6 +1130,7 @@ function relativePath (from, to) {
   return relPath
 }
 
+
 function layoutRelationshipsPath (layoutPath) {
   const baseName = path.posix.basename(layoutPath)
   return `ppt/slideLayouts/_rels/${baseName}.rels`
