@@ -964,6 +964,33 @@ function copyGenericPart ({ templateZip, outputZip, sourcePath, state }) {
   return sourcePath
 }
 
+/**
+ * 核心修复：确保 [Content_Types].xml 中包含图片扩展名的默认定义
+ * 防止插入 PNG/JPG 时因缺少定义导致 PPT 需要修复
+ */
+function ensureDefaultContentType (state, extension, contentType) {
+  // 移除点号，转小写
+  const ext = extension.replace(/^\./, '').toLowerCase()
+  // 检查是否已存在该扩展名的定义
+  const regex = new RegExp(`<Default Extension="${ext}"`, 'i')
+  if (state.contentTypesContent.match(regex)) {
+    return
+  }
+
+  // 构造新的 Default 节点
+  const defaultEntry = `<Default Extension="${ext}" ContentType="${contentType}"/>`
+
+  // 插入到 <Types> 标签之后
+  // 某些 PPT 结构的 Types 可能带有命名空间，所以找第一个 ">" 比较安全
+  const insertIndex = state.contentTypesContent.indexOf('>')
+  if (insertIndex === -1) return
+
+  state.contentTypesContent =
+    state.contentTypesContent.slice(0, insertIndex + 1) +
+    defaultEntry +
+    state.contentTypesContent.slice(insertIndex + 1)
+}
+
 function ensureContentType (state, partName, contentType) {
   // 更精确地检查是否已经存在相同的PartName
   const partNameRegex = new RegExp(`<Override[^>]*PartName="${partName}"[^>]*>`, 'i')
@@ -1243,6 +1270,8 @@ function formatCnDate (dateInput) {
 function escapeXmlValue (value) {
   if (!value) return ''
   return String(value)
+    // 核心修复：移除 XML 不允许的控制字符 (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -1302,25 +1331,42 @@ function escapeRegex (str) {
  */
 function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber) {
   try {
-    // 生成唯一文件路径
-    const ext = path.extname(image.fullPath || '') || '.png'
+    // 1. 确定文件扩展名和 MIME 类型
+    // 如果是 base64 数据，默认为 png，否则从文件名获取
+    let ext = '.png'
+    if (!image.data && image.fullPath) {
+      ext = path.extname(image.fullPath) || '.png'
+    }
+
+    // 2. 生成唯一文件路径
     const newImagePath = `ppt/media/image_${state.mediaCounter++}${ext}`
 
-    // 读入图片 Buffer
-    const buffer = image.data
-      ? Buffer.from(image.data.replace(/^data:image\/\w+;base64,/, ''), 'base64')
-      : fs.readFileSync(image.fullPath)
+    // 3. 核心修复：注册 Content Type
+    // 这一步至关重要，缺少它会导致 PPT 报错“需要修复”
+    const mimeType = ext.toLowerCase().includes('png') ? 'image/png' : 'image/jpeg'
+    ensureDefaultContentType(state, ext, mimeType)
 
-    // 写入输出 Zip（如果 outputZip 可用）
+    // 4. 准备图片数据
+    let buffer
+    if (image.data) {
+      // 处理 base64 (来自 pdf2pic)
+      const base64Data = image.data.replace(/^data:image\/\w+;base64,/, '')
+      buffer = Buffer.from(base64Data, 'base64')
+    } else {
+      // 处理本地文件
+      buffer = fs.readFileSync(image.fullPath)
+    }
+
+    // 5. 写入 Zip
     if (outputZip) {
       outputZip.file(newImagePath, buffer)
     }
 
-    // 记录映射供 cloneSlideRelationships 使用
+    // 6. 记录映射
     const mapKey = `slide${slideNumber}_main`
     state.mediaMap.set(mapKey, newImagePath)
 
-    // 可选：如果模板文本中有 {{图片}} 占位符，则清理掉它
+    // 7. 清理占位符文本
     let updatedXml = slideXml
     updatedXml = updatedXml.replace(/\{\{\s*图片\s*\}\}/g, '')
 
