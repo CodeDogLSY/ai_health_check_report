@@ -34,25 +34,26 @@ const DEFAULT_LAYOUT = {
 // ==================== utils.js ====================
 function normalizeName (value, id = '') {
   if (!value) return ''
-  let normalized = String(value)
+
+  // 标准化姓名
+  const namePart = String(value)
     .replace(/\.[^.]+$/, '') // 移除文件扩展名
     .replace(/\s+/g, '') // 移除所有空格
     .toLowerCase() // 转换为小写
 
-  // 如果提供了id（员工信息），则返回"姓名+证件号"格式
+  // 如果提供了id（员工信息），则返回"姓名+证件号"格式用于匹配
   if (id) {
-    return (normalized + id.toLowerCase()).replace(/\s+/g, '')
+    return namePart + id.toLowerCase().replace(/\s+/g, '')
   }
 
-  // 对于文件名，提取"姓名-证件号"部分
-  // 匹配模式：姓名-证件号-...
-  const match = normalized.match(/^([^-]+)-([^-]+)/)
+  // 对于文件名，提取"姓名-证件号"部分用于匹配
+  const match = namePart.match(/^([^-]+)-([^-]+)/)
   if (match) {
-    return match[1] + match[2] // 返回"姓名+证件号"格式
+    return match[1] + match[2]
   }
 
-  // 兼容旧格式，只返回姓名
-  return normalized.replace(/[-_].*$/, '')
+  // 兼容旧格式
+  return namePart.replace(/[-_].*$/, '')
 }
 
 function normalizeText (value) {
@@ -216,26 +217,26 @@ async function collectEmployeeAssets (employee, files) {
       const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other'
       const label = buildAttachmentLabel(file)
 
+      const lower = file.toLowerCase()
+
       // 确定文件优先级，按照 inbody、尿检、血检、心电图、AI解读的顺序
       let priority = 99 // 默认优先级
-      if (file.toLowerCase().includes('inbody')) {
+      if (lower.includes('inbody')) {
         priority = 1
-      } else if (file.toLowerCase().includes('尿常规') || file.toLowerCase().includes('尿检')) {
+      } else if (lower.includes('尿常规') || lower.includes('尿检')) {
         priority = 2
-      } else if (file.toLowerCase().includes('血常规')) {
+      } else if (lower.includes('血常规')) {
         priority = 3
-      } else if (file.toLowerCase().includes('心电图')) {
+      } else if (lower.includes('心电图')) {
         priority = 4
-      } else if (file.toLowerCase().includes('生化检查')) {
+      } else if (lower.includes('生化检查')) {
         priority = 5
-      }
-      else if (file.toLowerCase().includes('ai解读') || file.toLowerCase().includes('ai解读')) {
+      } else if (lower.includes('ai解读')) {
         priority = 6
       }
 
       // 分类：用于将不同资料放入不同模板页
       let category = 'other'
-      const lower = file.toLowerCase()
       if (lower.includes('inbody')) {
         category = 'inbody'
       } else if (lower.includes('心电图')) {
