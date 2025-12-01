@@ -245,6 +245,8 @@ async function collectEmployeeAssets (employee, files) {
         category = 'ecg'
       } else if (lower.includes('尿常规') || lower.includes('尿检') || lower.includes('血常规') || lower.includes('生化检查') || lower.includes('糖化血红蛋白')) {
         category = 'lab'
+      } else if (lower.includes('ai解读')) {
+        category = 'ai'
       }
 
       return {
@@ -446,7 +448,6 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
 
   const slidesToCopy = [
     { templateSlide: 1, position: 'start' },
-    { templateSlide: 5, position: 'end' },
     { templateSlide: 6, position: 'end' },
     { templateSlide: 7, position: 'end' },
   ]
@@ -592,14 +593,6 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
 
   if (position === 'start') {
     slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date)
-  }
-
-  // 如果是模板第5页（AI总结），替换{{总结}}占位符
-  if (templateSlideNumber === 5 && options.summary) {
-    const replacements = {
-      总结: options.summary,
-    }
-    slideXml = replaceTextInSlidePreferred(slideXml, replacements)
   }
 
   outputZip.file(newSlidePath, slideXml)
@@ -1305,7 +1298,7 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
   // 为每个影像资料复制对应的模板页
   for (const image of imageItems) {
     const cat = image.category || 'other'
-    const templateSlideNumber = cat === 'inbody' ? 2 : cat === 'lab' ? 3 : cat === 'ecg' ? 4 : 3
+    const templateSlideNumber = cat === 'inbody' ? 2 : cat === 'lab' ? 3 : cat === 'ecg' ? 4 : cat === 'ai' ? 5 : 3
     const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
     const templateSlide = templateZip.file(templateSlidePath)
     if (!templateSlide) {
