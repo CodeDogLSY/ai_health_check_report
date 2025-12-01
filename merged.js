@@ -326,17 +326,17 @@ async function convertPdfAttachment (pdfAttachment, employee) {
     // 复制 PDF 到临时目录（pdf2pic 需要文件路径）
     await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
 
-    // -------------------------------------------------------------
-    // 修改点 1: 优先尝试 pdf2pic (GraphicsMagick/Ghostscript)
+    //-----------------------------------------------------------
+    // 优先尝试 pdf2pic (GraphicsMagick/Ghostscript)
     // pdf2pic 在处理中文字体和复杂排版时比 node-canvas 更可靠
-    // -------------------------------------------------------------
+    // ----------------------------------------------------------
     const pagesFromPic = await convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
     if (pagesFromPic.length) {
       return pagesFromPic.map((p) => ({ ...p, category: pdfAttachment.category }))
     }
 
     // -------------------------------------------------------------
-    // 修改点 2: 如果 pdf2pic 失败，再尝试内置的 pdfjs-dist
+    //  如果 pdf2pic 失败，再尝试内置的 pdfjs-dist
     // -------------------------------------------------------------
     console.warn(`⚠️ pdf2pic 转换未返回结果，尝试使用 pdfjs-dist 兜底（可能存在字体丢失风险）...`)
     const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
@@ -356,14 +356,14 @@ async function convertPdfAttachment (pdfAttachment, employee) {
 }
 
 /**
- * 优化版：添加 CMap 支持，尽量提高 pdfjs 读取中文的能力
+ * 添加 CMap 支持，尽量提高 pdfjs 读取中文的能力
  */
 async function convertWithPdfRenderer (pdfPath, attachment) {
   try {
     const pdfBuffer = await fs.readFile(pdfPath)
     const pdfData = new Uint8Array(pdfBuffer)
 
-    // 修改点 3: 配置 cMapUrl，帮助解析中文字符编码
+    //配置 cMapUrl，帮助解析中文字符编码
     const pdfDoc = await pdfjsLib.getDocument({
       data: pdfData,
       verbosity: 0,
@@ -396,34 +396,6 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
     return []
   }
 }
-
-// async function convertWithPdfRenderer (pdfPath, attachment) {
-//   try {
-//     const pdfBuffer = await fs.readFile(pdfPath)
-//     const pdfData = new Uint8Array(pdfBuffer)
-//     const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
-//     const pages = []
-
-//     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
-//       const page = await pdfDoc.getPage(pageNumber)
-//       const viewport = page.getViewport({ scale: 2 })
-//       const canvas = createCanvas(viewport.width, viewport.height)
-//       const context = canvas.getContext('2d')
-
-//       await page.render({ canvasContext: context, viewport }).promise
-//       const imageBuffer = canvas.toBuffer('image/png')
-//       pages.push({
-//         label: `${attachment.label} 第${pageNumber}页`,
-//         data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
-//       })
-//     }
-
-//     return pages
-//   } catch (error) {
-//     console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
-//     return []
-//   }
-// }
 
 async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
   try {
@@ -1017,7 +989,6 @@ function updatePresentationDocuments (zip, state) {
   const updatedMasters = appendMasterEntries(state.presContent, state)
   state.presContent = updatedMasters
 
-  // 确保所有新增文件都有正确的content type
   // 检查并添加所有新增幻灯片的content type
   for (const slide of state.newSlides) {
     ensureContentType(state, `/ppt/slides/slide${slide.slideNumber}.xml`, CONTENT_TYPES.slide)
