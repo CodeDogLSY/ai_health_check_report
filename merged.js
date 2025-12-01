@@ -310,22 +310,41 @@ async function buildImageItems (assetInfo, employee) {
   return imageItems
 }
 
+/**
+ * 修复版：优先使用 pdf2pic，因为它对字体渲染的支持更好
+ */
 async function convertPdfAttachment (pdfAttachment, employee) {
   let tempPdfPath = ''
   try {
     const safeLabel = buildAsciiSafeLabel(`${employee.id}_${employee.name}_${pdfAttachment.label}`)
+    // 生成临时文件名
     const tempPdfName = `${crypto.randomUUID()}.pdf`
     tempPdfPath = path.join(PDF_TEMP_DIR, tempPdfName)
+
     await fs.ensureDir(PDF_TEMP_DIR)
+
+    // 复制 PDF 到临时目录（pdf2pic 需要文件路径）
     await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
 
+    // -------------------------------------------------------------
+    // 修改点 1: 优先尝试 pdf2pic (GraphicsMagick/Ghostscript)
+    // pdf2pic 在处理中文字体和复杂排版时比 node-canvas 更可靠
+    // -------------------------------------------------------------
+    const pagesFromPic = await convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+    if (pagesFromPic.length) {
+      return pagesFromPic.map((p) => ({ ...p, category: pdfAttachment.category }))
+    }
+
+    // -------------------------------------------------------------
+    // 修改点 2: 如果 pdf2pic 失败，再尝试内置的 pdfjs-dist
+    // -------------------------------------------------------------
+    console.warn(`⚠️ pdf2pic 转换未返回结果，尝试使用 pdfjs-dist 兜底（可能存在字体丢失风险）...`)
     const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
     if (pdfImgPages.length) {
       return pdfImgPages.map((p) => ({ ...p, category: pdfAttachment.category }))
     }
 
-    const pages = await convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
-    return pages.map((p) => ({ ...p, category: pdfAttachment.category }))
+    return []
   } catch (error) {
     console.warn(`⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`)
     return []
@@ -336,11 +355,22 @@ async function convertPdfAttachment (pdfAttachment, employee) {
   }
 }
 
+/**
+ * 优化版：添加 CMap 支持，尽量提高 pdfjs 读取中文的能力
+ */
 async function convertWithPdfRenderer (pdfPath, attachment) {
   try {
     const pdfBuffer = await fs.readFile(pdfPath)
     const pdfData = new Uint8Array(pdfBuffer)
-    const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
+
+    // 修改点 3: 配置 cMapUrl，帮助解析中文字符编码
+    const pdfDoc = await pdfjsLib.getDocument({
+      data: pdfData,
+      verbosity: 0,
+      cMapUrl: './node_modules/pdfjs-dist/cmaps/', // 尝试加载本地 CMaps
+      cMapPacked: true,
+    }).promise
+
     const pages = []
 
     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
@@ -348,6 +378,9 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
       const viewport = page.getViewport({ scale: 2 })
       const canvas = createCanvas(viewport.width, viewport.height)
       const context = canvas.getContext('2d')
+
+      // 在这里，node-canvas 依然依赖系统字体。
+      // 如果需要彻底解决 pdfjs 的问题，需要 canvas.registerFont('path/to/font.ttf', { family: 'SimSun' })
 
       await page.render({ canvasContext: context, viewport }).promise
       const imageBuffer = canvas.toBuffer('image/png')
@@ -363,6 +396,34 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
     return []
   }
 }
+
+// async function convertWithPdfRenderer (pdfPath, attachment) {
+//   try {
+//     const pdfBuffer = await fs.readFile(pdfPath)
+//     const pdfData = new Uint8Array(pdfBuffer)
+//     const pdfDoc = await pdfjsLib.getDocument({ data: pdfData, verbosity: 0 }).promise
+//     const pages = []
+
+//     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
+//       const page = await pdfDoc.getPage(pageNumber)
+//       const viewport = page.getViewport({ scale: 2 })
+//       const canvas = createCanvas(viewport.width, viewport.height)
+//       const context = canvas.getContext('2d')
+
+//       await page.render({ canvasContext: context, viewport }).promise
+//       const imageBuffer = canvas.toBuffer('image/png')
+//       pages.push({
+//         label: `${attachment.label} 第${pageNumber}页`,
+//         data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+//       })
+//     }
+
+//     return pages
+//   } catch (error) {
+//     console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
+//     return []
+//   }
+// }
 
 async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
   try {
@@ -1386,7 +1447,7 @@ async function main () {
           employee,
           reason: '缺少体检结果与AI总结',
         })
-        console.warn(`⚠️ ${employee.name} 未生成：缺少体检结果与AI总结`)
+        // console.warn(`⚠️ ${employee.name} 未生成：缺少体检结果与AI总结`)
         continue
       }
 
