@@ -356,9 +356,10 @@ function buildReportFileName (employee, suffix = '') {
   const safeName = sanitizeForFilename(employee.name)
   const dateStr = formatDate(new Date())
   if (suffix) {
-    return `员工体检报告_${safeName}${suffix}_${dateStr}.pptx`
+    // return `员工体检报告_${safeName}${suffix}_${dateStr}.pptx`
+    return `体检报告_${safeName}${suffix}.pptx`
   }
-  return `员工体检报告_${safeName}_${dateStr}.pptx`
+  return `体检报告_${safeName}.pptx`
 }
 
 const CONTENT_TYPES = {
