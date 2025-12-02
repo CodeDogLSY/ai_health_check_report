@@ -386,7 +386,7 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
   const outputZip = new PizZip(outputBuffer)
   const slidesToCopy = [
     { templateSlide: 1, position: 'start' },
-    { templateSlide: 6, position: 'end' },
+    // { templateSlide: 6, position: 'end' },
     { templateSlide: 7, position: 'end' },
   ]
   const state = initializeState(outputZip, options)
