@@ -11,6 +11,9 @@ const crypto = require('crypto')
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
+//是否带第六页指导页
+const has6WhitePage = true
+
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
 const OUTPUT_DIR = path.join(ROOT, 'output')
@@ -29,6 +32,8 @@ const DEFAULT_LAYOUT = {
   height: 5.625,
   orientation: 'landscape',
 }
+
+
 
 function normalizeName (value, id = '') {
   if (!value) return ''
@@ -384,11 +389,16 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
   ])
   const templateZip = new PizZip(templateBuffer)
   const outputZip = new PizZip(outputBuffer)
-  const slidesToCopy = [
-    { templateSlide: 1, position: 'start' },
-    // { templateSlide: 6, position: 'end' },
-    { templateSlide: 7, position: 'end' },
-  ]
+
+  const slidesToCopy = has6WhitePage ?
+    [
+      { templateSlide: 1, position: 'start' },
+      { templateSlide: 6, position: 'end' },
+      { templateSlide: 7, position: 'end' },
+    ] : [
+      { templateSlide: 1, position: 'start' },
+      { templateSlide: 7, position: 'end' },
+    ]
   const state = initializeState(outputZip, options)
   for (const config of slidesToCopy) {
     copyTemplateSlide({
