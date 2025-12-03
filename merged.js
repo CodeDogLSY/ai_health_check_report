@@ -310,7 +310,7 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
     const pages = []
     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
       const page = await pdfDoc.getPage(pageNumber)
-      const viewport = page.getViewport({ scale: 4 })
+      const viewport = page.getViewport({ scale: 10 })
       const canvas = createCanvas(viewport.width, viewport.height)
       const context = canvas.getContext('2d')
       await page.render({ canvasContext: context, viewport }).promise
@@ -333,8 +333,8 @@ async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
     const convert = pdfFromPath(pdfPath, {
       density: 900,
       format: 'png',
-      width: 1200,
-      height: 800,
+      width: 2400,
+      height: 1600,
       saveFilename: safeLabel,
       savePath: PDF_IMAGE_DIR,
     })
@@ -1251,7 +1251,7 @@ async function convertPptxToPdf (pptxPath) {
         '--headless',
         '--invisible',
         '--convert-to',
-        'pdf:impress_pdf_Export:{"PageExportResolution":4800}',
+        'pdf:impress_pdf_Export:{"ReduceImageResolution":false,"Quality":100}',
         '--outdir',
         outDir,
         pptxPath,
