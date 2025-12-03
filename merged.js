@@ -9,10 +9,21 @@ const { createCanvas } = require('canvas')
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js')
 const crypto = require('crypto')
 
+// --- 新增：引入 libreoffice-convert 和 util ---
+const libre = require('libreoffice-convert')
+const util = require('util')
+const convertAsync = util.promisify(libre.convert)
+const { spawn } = require('child_process')
+// --------------------------------------------
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
 //是否带第六页指导页
 const has6WhitePage = false
+
+// --- 新增：PDF 生成开关 ---
+const generatePdf = true // 设置为 true 开启 PDF 转换，false 则关闭
+// ------------------------
 
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
@@ -32,8 +43,6 @@ const DEFAULT_LAYOUT = {
   height: 5.625,
   orientation: 'landscape',
 }
-
-
 
 function normalizeName (value, id = '') {
   if (!value) return ''
@@ -1208,6 +1217,70 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
   await fs.writeFile(outputPath, updatedBuffer)
 }
 
+// --- 新增：PPTX 转 PDF 辅助函数 ---
+async function convertPptxToPdf (pptxPath) {
+  const pdfPath = pptxPath.replace(/\.pptx$/i, '.pdf')
+  const pptxBuf = await fs.readFile(pptxPath)
+  try {
+    const pdfBuf = await convertAsync(pptxBuf, '.pdf', 'impress_pdf_Export')
+    await fs.writeFile(pdfPath, pdfBuf)
+  } catch (err) {
+    const candidates = [
+      process.env.LIBREOFFICE_PATH,
+      process.env.SOFFICE_PATH,
+      'C:/Program Files/LibreOffice/program/soffice.exe',
+      'C:/Program Files (x86)/LibreOffice/program/soffice.exe',
+    ].filter(Boolean)
+    let sofficePath = null
+    for (const p of candidates) {
+      try {
+        if (p && (await fs.pathExists(p))) {
+          sofficePath = p
+          break
+        }
+      } catch {}
+    }
+    if (!sofficePath) {
+      throw new Error('未找到 soffice，可设置 LIBREOFFICE_PATH 或 SOFFICE_PATH 指向 soffice.exe')
+    }
+    const outDir = path.dirname(pdfPath)
+    await fs.ensureDir(outDir)
+    await new Promise((resolve, reject) => {
+      const args = [
+        '--headless',
+        '--invisible',
+        '--convert-to',
+        'pdf:impress_pdf_Export',
+        '--outdir',
+        outDir,
+        pptxPath,
+      ]
+      const child = spawn(sofficePath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stderr = ''
+      child.stderr.on('data', (d) => {
+        stderr += String(d)
+      })
+      child.on('error', (e) => reject(e))
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          reject(new Error(`soffice 退出码 ${code}: ${stderr.trim()}`))
+        }
+      })
+    })
+    if (!(await fs.pathExists(pdfPath))) {
+      throw new Error('soffice 执行后未生成 PDF 文件')
+    }
+    const stat = await fs.stat(pdfPath)
+    if (!stat.size) {
+      throw new Error('生成的 PDF 为空')
+    }
+  }
+  return pdfPath
+}
+// --------------------------------
+
 async function main () {
   await fs.ensureDir(OUTPUT_DIR)
   await fs.ensureDir(PDF_IMAGE_DIR)
@@ -1248,6 +1321,20 @@ async function main () {
         await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
       }
       await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
+
+      // --- 新增：PDF 转换逻辑 ---
+      if (generatePdf) {
+        try {
+          console.log(`⏳ 正在转换为 PDF: ${outputName}...`)
+          const pdfPath = await convertPptxToPdf(outputPath)
+          console.log(`✓ PDF 生成成功: ${path.basename(pdfPath)}`)
+        } catch (pdfErr) {
+          console.error(`❌ PDF 转换失败 (${employee.name}): ${pdfErr.message}`)
+          console.error(`   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`)
+        }
+      }
+      // ------------------------
+
       successReports.push({ employee, outputPath })
       console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`)
     } catch (error) {
