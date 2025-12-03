@@ -20,7 +20,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/buil
 const has6WhitePage = false
 
 //PDF 生成开关 设置为 true 开启 PDF 转换，false 则关闭
-const generatePdf = false
+const generatePdf = true
 //name中加入id开关 false 不添加 true 添加
 const addId = false
 
@@ -310,7 +310,7 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
     const pages = []
     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
       const page = await pdfDoc.getPage(pageNumber)
-      const viewport = page.getViewport({ scale: 2 })
+      const viewport = page.getViewport({ scale: 4 })
       const canvas = createCanvas(viewport.width, viewport.height)
       const context = canvas.getContext('2d')
       await page.render({ canvasContext: context, viewport }).promise
@@ -331,7 +331,7 @@ async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
   try {
     await fs.ensureDir(PDF_IMAGE_DIR)
     const convert = pdfFromPath(pdfPath, {
-      density: 600,
+      density: 900,
       format: 'png',
       width: 1200,
       height: 800,
@@ -1251,7 +1251,7 @@ async function convertPptxToPdf (pptxPath) {
         '--headless',
         '--invisible',
         '--convert-to',
-        'pdf:impress_pdf_Export',
+        'pdf:impress_pdf_Export:{"PageExportResolution":4800}',
         '--outdir',
         outDir,
         pptxPath,
