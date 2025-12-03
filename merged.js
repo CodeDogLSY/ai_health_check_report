@@ -8,8 +8,6 @@ const { fromPath: pdfFromPath } = require('pdf2pic')
 const { createCanvas } = require('canvas')
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js')
 const crypto = require('crypto')
-
-// --- 新增：引入 libreoffice-convert 和 util ---
 const libre = require('libreoffice-convert')
 const util = require('util')
 const convertAsync = util.promisify(libre.convert)
@@ -21,9 +19,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/buil
 //是否带第六页指导页
 const has6WhitePage = false
 
-// --- 新增：PDF 生成开关 ---
-const generatePdf = true // 设置为 true 开启 PDF 转换，false 则关闭
-// ------------------------
+//PDF 生成开关 设置为 true 开启 PDF 转换，false 则关闭
+const generatePdf = false
+//name中加入id开关 false 不添加 true 添加
+const addId = false
 
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
@@ -332,7 +331,7 @@ async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
   try {
     await fs.ensureDir(PDF_IMAGE_DIR)
     const convert = pdfFromPath(pdfPath, {
-      density: 144,
+      density: 600,
       format: 'png',
       width: 1200,
       height: 800,
@@ -368,12 +367,14 @@ function initializePresentation (layout) {
 
 function buildReportFileName (employee, suffix = '') {
   const safeName = sanitizeForFilename(employee.name)
+  const safeId = sanitizeForFilename(employee.id)
   const dateStr = formatDate(new Date())
+  const idPart = addId ? `_${safeId}` : ''
   if (suffix) {
     // return `员工体检报告_${safeName}${suffix}_${dateStr}.pptx`
-    return `体检报告_${safeName}${suffix}.pptx`
+    return `体检报告_${safeName}${idPart}${suffix}.pptx`
   }
-  return `体检报告_${safeName}.pptx`
+  return `体检报告_${safeName}${idPart}.pptx`
 }
 
 const CONTENT_TYPES = {
@@ -1238,7 +1239,7 @@ async function convertPptxToPdf (pptxPath) {
           sofficePath = p
           break
         }
-      } catch {}
+      } catch { }
     }
     if (!sofficePath) {
       throw new Error('未找到 soffice，可设置 LIBREOFFICE_PATH 或 SOFFICE_PATH 指向 soffice.exe')
