@@ -1328,6 +1328,15 @@ async function main () {
           console.log(`⏳ 正在转换为 PDF: ${outputName}...`)
           const pdfPath = await convertPptxToPdf(outputPath)
           console.log(`✓ PDF 生成成功: ${path.basename(pdfPath)}`)
+          try {
+            const stat = await fs.stat(pdfPath)
+            if (stat.size > 0) {
+              await fs.remove(outputPath)
+              console.log(`✓ 已删除 PPTX: ${path.basename(outputPath)}`)
+            }
+          } catch (delErr) {
+            console.warn(`⚠️ 删除 PPTX 失败: ${delErr.message}`)
+          }
         } catch (pdfErr) {
           console.error(`❌ PDF 转换失败 (${employee.name}): ${pdfErr.message}`)
           console.error(`   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`)
