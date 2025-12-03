@@ -12,7 +12,7 @@ const crypto = require('crypto')
 pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
 
 //是否带第六页指导页
-const has6WhitePage = true
+const has6WhitePage = false
 
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
