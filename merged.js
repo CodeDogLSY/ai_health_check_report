@@ -1282,6 +1282,45 @@ async function convertPptxToPdf (pptxPath) {
 }
 // --------------------------------
 
+// 新增：转换result_add_suggest文件夹内的PPT为PDF
+async function convertResultPptToPdf () {
+  const RESULT_DIR = path.join(ROOT, 'result_add_suggest')
+  if (!(await fs.pathExists(RESULT_DIR))) {
+    console.error(`❌ result_add_suggest 文件夹不存在`)
+    return
+  }
+
+  const files = await fs.readdir(RESULT_DIR)
+  const pptxFiles = files.filter(file => path.extname(file).toLowerCase() === '.pptx')
+
+  if (pptxFiles.length === 0) {
+    console.log(`ℹ️ result_add_suggest 文件夹内没有PPT文件`)
+    return
+  }
+
+  console.log(`📋 找到 ${pptxFiles.length} 个PPT文件，开始转换...`)
+
+  let successCount = 0
+  let failCount = 0
+
+  for (const pptxFile of pptxFiles) {
+    const pptxPath = path.join(RESULT_DIR, pptxFile)
+    try {
+      console.log(`⏳ 正在转换: ${pptxFile}...`)
+      const pdfPath = await convertPptxToPdf(pptxPath)
+      console.log(`✓ PDF 生成成功: ${path.basename(pdfPath)}`)
+      successCount++
+    } catch (pdfErr) {
+      console.error(`❌ PDF 转换失败 (${pptxFile}): ${pdfErr.message}`)
+      failCount++
+    }
+  }
+
+  console.log(`\n===== 转换统计 =====`)
+  console.log(`✅ 成功: ${successCount} 个`)
+  console.log(`❌ 失败: ${failCount} 个`)
+}
+
 async function main () {
   await fs.ensureDir(OUTPUT_DIR)
   await fs.ensureDir(PDF_IMAGE_DIR)
@@ -1366,7 +1405,18 @@ async function main () {
   })
 }
 
-main().catch((error) => {
-  console.error('❌ 生成失败：', error)
-  process.exitCode = 1
-})
+// 检查命令行参数
+const args = process.argv.slice(2)
+if (args.includes('--convert-ppt-pdf')) {
+  // 执行PPT转PDF命令
+  convertResultPptToPdf().catch((error) => {
+    console.error('❌ 转换失败：', error)
+    process.exitCode = 1
+  })
+} else {
+  // 执行原始主流程
+  main().catch((error) => {
+    console.error('❌ 生成失败：', error)
+    process.exitCode = 1
+  })
+}

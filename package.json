@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node merged.js",
+    "convert-ppt-pdf": "node merged.js --convert-ppt-pdf",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
