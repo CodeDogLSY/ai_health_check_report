@@ -20,7 +20,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/buil
 const has6WhitePage = false
 
 //PDF 生成开关 设置为 true 开启 PDF 转换，false 则关闭
-const generatePdf = true
+const generatePdf = false
 //name中加入id开关 false 不添加 true 添加
 const addId = false
 
