@@ -1404,12 +1404,112 @@ async function main () {
   })
 }
 
+// 新增：处理result_add_suggest文件夹下的PPT文件名，添加证件号
+async function renameResultPptFiles () {
+  const RESULT_DIR = path.join(ROOT, 'result_add_suggest')
+  if (!(await fs.pathExists(RESULT_DIR))) {
+    console.error(`❌ result_add_suggest 文件夹不存在`)
+    return
+  }
+
+  // 读取员工表数据
+  const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表')
+  const employees = await loadEmployees(sheetPath)
+
+  // 建立姓名到证件号的映射
+  const nameToIdMap = new Map()
+  for (const employee of employees) {
+    const currentIds = nameToIdMap.get(employee.name) || []
+    currentIds.push(employee.id)
+    nameToIdMap.set(employee.name, currentIds)
+  }
+
+  // 获取文件夹中的PPT文件
+  const files = await fs.readdir(RESULT_DIR)
+  const pptxFiles = files.filter(file => path.extname(file).toLowerCase() === '.pptx')
+
+  if (pptxFiles.length === 0) {
+    console.log(`ℹ️ result_add_suggest 文件夹内没有PPT文件`)
+    return
+  }
+
+  console.log(`📋 找到 ${pptxFiles.length} 个PPT文件，开始重命名...`)
+
+  let successCount = 0
+  let skipCount = 0
+
+  for (const pptxFile of pptxFiles) {
+    try {
+      // 从文件名中提取姓名
+      const nameMatch = pptxFile.match(/^体检报告_([^_]+?)(?:_\d+)?(?:_[\dXx]+)?\.pptx$/i)
+      if (!nameMatch) {
+        console.warn(`⚠️ 文件名格式不符合要求：${pptxFile}，跳过`)
+        skipCount++
+        continue
+      }
+
+      let name = nameMatch[1]
+      name = normalizeText(name) // 规范化姓名，确保与员工表中的姓名匹配
+      console.log(`⏳ 处理文件：${pptxFile}`)
+      console.log(`   提取姓名：${name}`)
+
+      // 查询证件号
+      const ids = nameToIdMap.get(name)
+      if (!ids || ids.length === 0) {
+        console.warn(`⚠️ 未找到姓名为 "${name}" 的员工，跳过`)
+        skipCount++
+        continue
+      }
+
+      if (ids.length > 1) {
+        console.warn(`⚠️ 姓名为 "${name}" 的员工有多个证件号，跳过`)
+        skipCount++
+        continue
+      }
+
+      const id = ids[0]
+      console.log(`   匹配证件号：${id}`)
+
+      // 检查文件名是否已经包含证件号
+      if (pptxFile.includes(`_${id}`)) {
+        console.warn(`⚠️ 文件 ${pptxFile} 已经包含证件号，跳过`)
+        skipCount++
+        continue
+      }
+
+      // 生成新文件名
+      const baseName = path.basename(pptxFile, '.pptx')
+      const newFileName = `${baseName}_${id}.pptx`
+      const oldPath = path.join(RESULT_DIR, pptxFile)
+      const newPath = path.join(RESULT_DIR, newFileName)
+
+      // 执行重命名
+      await fs.rename(oldPath, newPath)
+      console.log(`✅ 重命名成功：${pptxFile} -> ${newFileName}`)
+      successCount++
+    } catch (error) {
+      console.error(`❌ 重命名失败 (${pptxFile}): ${error.message}`)
+      skipCount++
+    }
+  }
+
+  console.log(`\n===== 重命名统计 =====`)
+  console.log(`✅ 成功：${successCount} 个`)
+  console.log(`⚠️ 跳过：${skipCount} 个`)
+}
+
 // 检查命令行参数
 const args = process.argv.slice(2)
 if (args.includes('--convert-ppt-pdf')) {
   // 执行PPT转PDF命令
   convertResultPptToPdf().catch((error) => {
     console.error('❌ 转换失败：', error)
+    process.exitCode = 1
+  })
+} else if (args.includes('--rename-ppt-files')) {
+  // 执行PPT文件名重命名命令
+  renameResultPptFiles().catch((error) => {
+    console.error('❌ 重命名失败：', error)
     process.exitCode = 1
   })
 } else {

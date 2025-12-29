@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node merged.js",
     "convert-ppt-pdf": "node merged.js --convert-ppt-pdf",
+    "rename-ppt-files": "node merged.js --rename-ppt-files",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
