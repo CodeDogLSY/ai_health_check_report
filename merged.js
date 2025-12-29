@@ -1563,6 +1563,72 @@ async function extractIdFromPdfNames () {
     })
   }
 
+  // 定义发送form-data请求上传文件的函数
+  async function sendFileToUser (userId, fileFullPath, fileName) {
+    const https = require('https')
+    const fs = require('fs')
+
+    return new Promise((resolve, reject) => {
+      // 读取文件内容
+      fs.readFile(fileFullPath, (err, fileData) => {
+        if (err) {
+          reject(new Error(`读取文件失败: ${err.message}`))
+          return
+        }
+
+        // 构建multipart/form-data请求
+        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
+        const headers = {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        }
+
+        // 构建请求体
+        const formData = `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+          `Content-Type: application/pdf\r\n` +
+          `\r\n` +
+          fileData.toString('binary') + `\r\n` +
+          `--${boundary}--\r\n`
+
+        const options = {
+          hostname: 'product.cajcare.com',
+          port: 5182,
+          path: `/wechat/caj/slide/sendFileToUser?userId=${encodeURIComponent(userId)}`,
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Length': Buffer.byteLength(formData, 'binary')
+          }
+        }
+
+        const req = https.request(options, (res) => {
+          let data = ''
+
+          res.on('data', (chunk) => {
+            data += chunk
+          })
+
+          res.on('end', () => {
+            try {
+              const result = JSON.parse(data)
+              resolve(result)
+            } catch (error) {
+              reject(new Error(`解析响应失败: ${error.message}`))
+            }
+          })
+        })
+
+        req.on('error', (error) => {
+          reject(new Error(`请求失败: ${error.message}`))
+        })
+
+        // 发送请求体
+        req.write(formData, 'binary')
+        req.end()
+      })
+    })
+  }
+
   for (const pdfFile of pdfFiles) {
     try {
       // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf
@@ -1575,6 +1641,7 @@ async function extractIdFromPdfNames () {
 
       const name = idMatch[1]
       const id = idMatch[2]
+      const fileFullPath = path.join(SEND_DATA_DIR, pdfFile)
       console.log(`✅ ${pdfFile} -> 姓名：${name}，证件号：${id}`)
 
       // 调用接口获取企信ID
@@ -1582,7 +1649,18 @@ async function extractIdFromPdfNames () {
       const qixinResult = await getQixinId(id)
 
       if (qixinResult.returnCode === 1) {
-        console.log(`✅ 企信ID获取成功：${qixinResult.returnData}`)
+        const qixinId = qixinResult.returnData
+        console.log(`✅ 企信ID获取成功：${qixinId}`)
+
+        // 调用接口发送PDF文件
+        console.log(`⏳ 正在发送${pdfFile}到企信...`)
+        const sendResult = await sendFileToUser(qixinId, fileFullPath, pdfFile)
+
+        if (sendResult.code === 1) {
+          console.log(`✅ 文件发送成功：${sendResult.message}`)
+        } else {
+          console.warn(`⚠️ 文件发送失败：${sendResult.message || '未知错误'}`)
+        }
       } else {
         console.warn(`⚠️ 企信ID获取失败：${qixinResult.returnMessage}`)
       }
