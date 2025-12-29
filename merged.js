@@ -18,11 +18,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/buil
 
 //是否带第六页指导页
 const has6WhitePage = false
-
-//PDF 生成开关 设置为 true 开启 PDF 转换，false 则关闭
+//PDF 生成文件类型开关 设置为 true 开启 PDF 转换，false 则关闭
 const generatePdf = false
 //name中加入id开关 false 不添加 true 添加
-const addId = false
+const addId = true
 
 const ROOT = path.resolve(__dirname, '.')
 const DATA_DIR = path.join(ROOT, 'data')
