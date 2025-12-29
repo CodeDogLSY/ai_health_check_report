@@ -1498,6 +1498,52 @@ async function renameResultPptFiles () {
   console.log(`⚠️ 跳过：${skipCount} 个`)
 }
 
+// 新增：读取send_data文件下的pdf文件，并从文件名中提取证件号并打印
+async function extractIdFromPdfNames () {
+  const SEND_DATA_DIR = path.join(ROOT, 'send_data')
+  if (!(await fs.pathExists(SEND_DATA_DIR))) {
+    console.error(`❌ send_data 文件夹不存在`)
+    return
+  }
+
+  const files = await fs.readdir(SEND_DATA_DIR)
+  const pdfFiles = files.filter(file => path.extname(file).toLowerCase() === '.pdf')
+
+  if (pdfFiles.length === 0) {
+    console.log(`ℹ️ send_data 文件夹内没有PDF文件`)
+    return
+  }
+
+  console.log(`📋 找到 ${pdfFiles.length} 个PDF文件，开始提取证件号...`)
+
+  let successCount = 0
+  let failCount = 0
+
+  for (const pdfFile of pdfFiles) {
+    try {
+      // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf
+      const idMatch = pdfFile.match(/^体检报告_([^_]+)_([\dXx]+)\.pdf$/)
+      if (!idMatch) {
+        console.warn(`⚠️ 文件名格式不符合要求：${pdfFile}`)
+        failCount++
+        continue
+      }
+
+      const name = idMatch[1]
+      const id = idMatch[2]
+      console.log(`✅ ${pdfFile} -> 姓名：${name}，证件号：${id}`)
+      successCount++
+    } catch (error) {
+      console.error(`❌ 处理失败 (${pdfFile}): ${error.message}`)
+      failCount++
+    }
+  }
+
+  console.log(`\n===== 提取统计 =====`)
+  console.log(`✅ 成功：${successCount} 个`)
+  console.log(`❌ 失败：${failCount} 个`)
+}
+
 // 检查命令行参数
 const args = process.argv.slice(2)
 if (args.includes('--convert-ppt-pdf')) {
@@ -1510,6 +1556,12 @@ if (args.includes('--convert-ppt-pdf')) {
   // 执行PPT文件名重命名命令
   renameResultPptFiles().catch((error) => {
     console.error('❌ 重命名失败：', error)
+    process.exitCode = 1
+  })
+} else if (args.includes('--extract-id-from-pdf')) {
+  // 执行从PDF文件名提取证件号命令
+  extractIdFromPdfNames().catch((error) => {
+    console.error('❌ 提取失败：', error)
     process.exitCode = 1
   })
 } else {
