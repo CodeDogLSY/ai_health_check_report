@@ -1519,114 +1519,66 @@ async function extractIdFromPdfNames () {
   let successCount = 0
   let failCount = 0
 
+  // 导入axios和form-data库
+  const axios = require('axios')
+  const FormData = require('form-data')
+
   // 定义发送POST请求获取企信ID的函数
   async function getQixinId (sfz) {
-    const http = require('http')
-
-    return new Promise((resolve, reject) => {
-      // 尝试将sfz参数放在URL中，同时使用POST方法
-      const queryString = `sfz=${encodeURIComponent(sfz)}`
-      const options = {
-        hostname: 'wxsite.yinda.cn',
-        port: 5182,
-        path: `/cajserver/test/caj-renlizy/ZhiGong/nologin/getQixinIdBySfz?${queryString}`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': 0
-        }
-      }
-
-      const req = http.request(options, (res) => {
-        let data = ''
-
-        res.on('data', (chunk) => {
-          data += chunk
-        })
-
-        res.on('end', () => {
-          try {
-            const result = JSON.parse(data)
-            resolve(result)
-          } catch (error) {
-            reject(new Error(`解析响应失败: ${error.message}`))
+    try {
+      // 使用axios发送POST请求，将sfz参数放在URL中
+      const response = await axios.post(
+        `http://wxsite.yinda.cn:5182/cajserver/test/caj-renlizy/ZhiGong/nologin/getQixinIdBySfz?sfz=${encodeURIComponent(sfz)}`,
+        {},
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
           }
-        })
-      })
-
-      req.on('error', (error) => {
-        reject(new Error(`请求失败: ${error.message}`))
-      })
-
-      // 不需要发送请求体
-      req.end()
-    })
+        }
+      )
+      return response.data
+    } catch (error) {
+      if (error.response) {
+        throw new Error(`请求失败: ${error.response.status} ${error.response.statusText}`)
+      } else if (error.request) {
+        throw new Error(`请求失败: 没有收到响应`)
+      } else {
+        throw new Error(`请求失败: ${error.message}`)
+      }
+    }
   }
 
   // 定义发送form-data请求上传文件的函数
   async function sendFileToUser (userId, fileFullPath, fileName) {
-    const https = require('https')
-    const fs = require('fs')
+    try {
+      // 创建form-data对象
+      const formData = new FormData()
+      // 添加文件
+      formData.append('file', fs.createReadStream(fileFullPath), {
+        filename: fileName,
+        contentType: 'application/pdf'
+      })
 
-    return new Promise((resolve, reject) => {
-      // 读取文件内容
-      fs.readFile(fileFullPath, (err, fileData) => {
-        if (err) {
-          reject(new Error(`读取文件失败: ${err.message}`))
-          return
-        }
-
-        // 构建multipart/form-data请求
-        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
-        const headers = {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        }
-
-        // 构建请求体
-        const formData = `--${boundary}\r\n` +
-          `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-          `Content-Type: application/pdf\r\n` +
-          `\r\n` +
-          fileData.toString('binary') + `\r\n` +
-          `--${boundary}--\r\n`
-
-        const options = {
-          hostname: 'product.cajcare.com',
-          port: 5182,
-          path: `/wechat/yd/sunflower/sendFileToUser?userId=${encodeURIComponent(userId)}`,
-          method: 'POST',
+      // 使用axios发送POST请求
+      const response = await axios.post(
+        `https://product.cajcare.com:5182/wechat/yd/sunflower/sendFileToUser?userId=${encodeURIComponent(userId)}`,
+        formData,
+        {
           headers: {
-            ...headers,
-            'Content-Length': Buffer.byteLength(formData, 'binary')
+            ...formData.getHeaders()
           }
         }
-
-        const req = https.request(options, (res) => {
-          let data = ''
-
-          res.on('data', (chunk) => {
-            data += chunk
-          })
-
-          res.on('end', () => {
-            try {
-              const result = JSON.parse(data)
-              resolve(result)
-            } catch (error) {
-              reject(new Error(`解析响应失败: ${error.message}`))
-            }
-          })
-        })
-
-        req.on('error', (error) => {
-          reject(new Error(`请求失败: ${error.message}`))
-        })
-
-        // 发送请求体
-        req.write(formData, 'binary')
-        req.end()
-      })
-    })
+      )
+      return response.data
+    } catch (error) {
+      if (error.response) {
+        throw new Error(`发送文件失败: ${error.response.status} ${error.response.statusText}`)
+      } else if (error.request) {
+        throw new Error(`发送文件失败: 没有收到响应`)
+      } else {
+        throw new Error(`发送文件失败: ${error.message}`)
+      }
+    }
   }
 
   for (const pdfFile of pdfFiles) {
