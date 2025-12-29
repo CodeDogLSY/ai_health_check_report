@@ -1519,6 +1519,50 @@ async function extractIdFromPdfNames () {
   let successCount = 0
   let failCount = 0
 
+  // 定义发送POST请求获取企信ID的函数
+  async function getQixinId (sfz) {
+    const http = require('http')
+
+    return new Promise((resolve, reject) => {
+      // 尝试将sfz参数放在URL中，同时使用POST方法
+      const queryString = `sfz=${encodeURIComponent(sfz)}`
+      const options = {
+        hostname: 'wxsite.yinda.cn',
+        port: 5182,
+        path: `/cajserver/test/caj-renlizy/ZhiGong/nologin/getQixinIdBySfz?${queryString}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': 0
+        }
+      }
+
+      const req = http.request(options, (res) => {
+        let data = ''
+
+        res.on('data', (chunk) => {
+          data += chunk
+        })
+
+        res.on('end', () => {
+          try {
+            const result = JSON.parse(data)
+            resolve(result)
+          } catch (error) {
+            reject(new Error(`解析响应失败: ${error.message}`))
+          }
+        })
+      })
+
+      req.on('error', (error) => {
+        reject(new Error(`请求失败: ${error.message}`))
+      })
+
+      // 不需要发送请求体
+      req.end()
+    })
+  }
+
   for (const pdfFile of pdfFiles) {
     try {
       // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf
@@ -1532,6 +1576,17 @@ async function extractIdFromPdfNames () {
       const name = idMatch[1]
       const id = idMatch[2]
       console.log(`✅ ${pdfFile} -> 姓名：${name}，证件号：${id}`)
+
+      // 调用接口获取企信ID
+      console.log(`⏳ 正在获取${name}的企信ID...`)
+      const qixinResult = await getQixinId(id)
+
+      if (qixinResult.returnCode === 1) {
+        console.log(`✅ 企信ID获取成功：${qixinResult.returnData}`)
+      } else {
+        console.warn(`⚠️ 企信ID获取失败：${qixinResult.returnMessage}`)
+      }
+
       successCount++
     } catch (error) {
       console.error(`❌ 处理失败 (${pdfFile}): ${error.message}`)
