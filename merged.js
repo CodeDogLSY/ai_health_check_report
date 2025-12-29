@@ -1593,7 +1593,7 @@ async function extractIdFromPdfNames () {
         const options = {
           hostname: 'product.cajcare.com',
           port: 5182,
-          path: `/wechat/caj/slide/sendFileToUser?userId=${encodeURIComponent(userId)}`,
+          path: `/wechat/yd/sunflower/sendFileToUser?userId=${encodeURIComponent(userId)}`,
           method: 'POST',
           headers: {
             ...headers,
