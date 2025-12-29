@@ -4,4 +4,6 @@ template_extract/
 template.zip
 data/
 all_data/
+output_all_data/
+send_data/
 
