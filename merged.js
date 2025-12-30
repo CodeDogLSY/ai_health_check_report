@@ -1583,8 +1583,8 @@ async function extractIdFromPdfNames () {
 
   for (const pdfFile of pdfFiles) {
     try {
-      // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf
-      const idMatch = pdfFile.match(/^体检报告_([^_]+)_([\dXx]+)\.pdf$/)
+      // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf 或 体检报告_姓名_证件号_数字.pdf
+      const idMatch = pdfFile.match(/^体检报告_([^_]+)_([\dXx]+)(?:_\d+)?\.pdf$/)
       if (!idMatch) {
         console.warn(`⚠️ 文件名格式不符合要求：${pdfFile}`)
         failCount++
