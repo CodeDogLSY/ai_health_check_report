@@ -1837,7 +1837,7 @@ async function extractIdFromPdfNames () {
     try {
       // 使用axios发送POST请求，将sfz参数放在URL中
       const response = await axios.post(
-        `http://wxsite.yinda.cn:5182/cajserver/test/caj-renlizy/ZhiGong/nologin/getQixinIdBySfz?sfz=${encodeURIComponent(sfz)}`,
+        `http://wxsite.yinda.cn:5182/cajserver/pro/caj-renlizy/ZhiGong/nologin/getQixinIdBySfz?sfz=${encodeURIComponent(sfz)}`,
         {},
         {
           headers: {
