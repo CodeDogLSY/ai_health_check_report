@@ -7,7 +7,7 @@
     "start": "node merged.js",
     "convert-ppt-pdf": "node merged.js --convert-ppt-pdf",
     "rename-ppt-files": "node merged.js --rename-ppt-files",
-    "extract-id-from-pdf": "node merged.js --extract-id-from-pdf",
+    "send-wechat-ee-msg": "node merged.js --extract-id-from-pdf",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
