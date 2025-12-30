@@ -531,7 +531,7 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
   const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
   let slideXml = templateSlide.asText()
   if (position === 'start') {
-    slideXml = applyCoverPlaceholders(slideXml, options.employee, options.date)
+    slideXml = applyCoverPlaceholders(slideXml, options.employee)
   }
   outputZip.file(newSlidePath, slideXml)
   cloneSlideRelationships({
@@ -1051,8 +1051,7 @@ function getInitialMediaCounter (zip) {
   return numbers.length ? Math.max(...numbers) + 1 : 1
 }
 
-function applyCoverPlaceholders (xml, employee = {}, dateValue = new Date()) {
-  const dateText = formatCnDate(dateValue)
+function applyCoverPlaceholders (xml, employee = {}) {
   const replacements = {
     姓名: employee.name || '',
     性别: employee.gender || '',
