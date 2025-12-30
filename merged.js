@@ -1057,7 +1057,7 @@ function applyCoverPlaceholders (xml, employee = {}, dateValue = new Date()) {
     姓名: employee.name || '',
     性别: employee.gender || '',
     年龄: employee.age || '',
-    日期: dateText || '',
+    日期: employee.date || '',
     工号: employee.id || '',
   }
   return replaceTextInSlidePreferred(xml, replacements)
