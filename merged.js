@@ -29,6 +29,10 @@ const OUTPUT_DIR = path.join(ROOT, 'output')
 const PDF_IMAGE_DIR = path.join(OUTPUT_DIR, '_pdf_images')
 const PDF_TEMP_DIR = path.join(PDF_IMAGE_DIR, '_tmp')
 
+// 并发控制配置
+const MAX_CONCURRENT_EMPLOYEES = 6 // 同时处理的员工数量
+const MAX_CONCURRENT_PDF_CONVERSIONS = 1 // 同时进行的 PDF 转换数量（Windows上建议设为1以确保稳定性）
+
 const TEMPLATE_CANDIDATES = ['2025员工体检报告（模板）.pptx', 'template.pptx']
 const EMPLOYEE_SHEET_CANDIDATES = ['员工表.xlsx', 'employees.xlsx']
 
@@ -253,6 +257,9 @@ function buildAttachmentLabel (fileName) {
 
 async function buildImageItems (assetInfo, employee) {
   const imageItems = []
+  const pdfTasks = []
+
+  // 先收集所有图片
   for (const attachment of assetInfo.attachments) {
     if (attachment.type === 'image') {
       imageItems.push({
@@ -261,10 +268,18 @@ async function buildImageItems (assetInfo, employee) {
         category: attachment.category,
       })
     } else if (attachment.type === 'pdf') {
-      const converted = await convertPdfAttachment(attachment, employee)
+      pdfTasks.push(() => convertPdfAttachment(attachment, employee))
+    }
+  }
+
+  // 并行处理所有 PDF 转换
+  if (pdfTasks.length > 0) {
+    const convertedResults = await Promise.all(pdfTasks.map(task => task()))
+    for (const converted of convertedResults) {
       imageItems.push(...converted)
     }
   }
+
   return imageItems
 }
 
@@ -306,19 +321,25 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
       cMapUrl: './node_modules/pdfjs-dist/cmaps/',
       cMapPacked: true,
     }).promise
-    const pages = []
+
+    // 并行处理所有页面
+    const pageTasks = []
     for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
-      const page = await pdfDoc.getPage(pageNumber)
-      const viewport = page.getViewport({ scale: 10 })
-      const canvas = createCanvas(viewport.width, viewport.height)
-      const context = canvas.getContext('2d')
-      await page.render({ canvasContext: context, viewport }).promise
-      const imageBuffer = canvas.toBuffer('image/png')
-      pages.push({
-        label: `${attachment.label} 第${pageNumber}页`,
-        data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+      pageTasks.push(async () => {
+        const page = await pdfDoc.getPage(pageNumber)
+        const viewport = page.getViewport({ scale: 10 })
+        const canvas = createCanvas(viewport.width, viewport.height)
+        const context = canvas.getContext('2d')
+        await page.render({ canvasContext: context, viewport }).promise
+        const imageBuffer = canvas.toBuffer('image/png')
+        return {
+          label: `${attachment.label} 第${pageNumber}页`,
+          data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+        }
       })
     }
+
+    const pages = await Promise.all(pageTasks.map(task => task()))
     return pages
   } catch (error) {
     console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
@@ -392,11 +413,11 @@ const REL_TYPES = {
 }
 
 async function insertTemplateSlides (templatePath, outputPath, options = {}) {
-  const [templateBuffer, outputBuffer] = await Promise.all([
-    fs.readFile(templatePath),
+  const [templateData, outputBuffer] = await Promise.all([
+    getTemplateBuffer(templatePath),
     fs.readFile(outputPath),
   ])
-  const templateZip = new PizZip(templateBuffer)
+  const templateZip = templateData.zip
   const outputZip = new PizZip(outputBuffer)
 
   const slidesToCopy = has6WhitePage ?
@@ -419,6 +440,97 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
       options,
     })
   }
+  if (!state.newSlides.length) {
+    return
+  }
+  updatePresentationDocuments(outputZip, state)
+  const updatedBuffer = outputZip.generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+  await fs.writeFile(outputPath, updatedBuffer)
+}
+
+// 分别插入封面和总结页的函数
+async function insertCoverSlide (templatePath, outputPath, options = {}) {
+  const [templateData, outputBuffer] = await Promise.all([
+    getTemplateBuffer(templatePath),
+    fs.readFile(outputPath),
+  ])
+  const templateZip = templateData.zip
+  const outputZip = new PizZip(outputBuffer)
+  const state = initializeState(outputZip, options)
+
+  copyTemplateSlide({
+    templateZip,
+    outputZip,
+    templateSlideNumber: 1,
+    position: 'start',
+    state,
+    options,
+  })
+
+  if (!state.newSlides.length) {
+    return
+  }
+  updatePresentationDocuments(outputZip, state)
+  const updatedBuffer = outputZip.generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+  await fs.writeFile(outputPath, updatedBuffer)
+}
+
+async function insertTextGuidanceSlide (templatePath, outputPath, options = {}) {
+  const [templateData, outputBuffer] = await Promise.all([
+    getTemplateBuffer(templatePath),
+    fs.readFile(outputPath),
+  ])
+  const templateZip = templateData.zip
+  const outputZip = new PizZip(outputBuffer)
+  const state = initializeState(outputZip, options)
+
+  copyTemplateSlide({
+    templateZip,
+    outputZip,
+    templateSlideNumber: 6,
+    position: 'middle', // 在图片页面之后，结束页之前
+    state,
+    options,
+  })
+
+  if (!state.newSlides.length) {
+    return
+  }
+  updatePresentationDocuments(outputZip, state)
+  const updatedBuffer = outputZip.generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+  await fs.writeFile(outputPath, updatedBuffer)
+}
+
+async function insertSummarySlides (templatePath, outputPath, options = {}) {
+  const [templateData, outputBuffer] = await Promise.all([
+    getTemplateBuffer(templatePath),
+    fs.readFile(outputPath),
+  ])
+  const templateZip = templateData.zip
+  const outputZip = new PizZip(outputBuffer)
+  const state = initializeState(outputZip, options)
+
+  copyTemplateSlide({
+    templateZip,
+    outputZip,
+    templateSlideNumber: 7,
+    position: 'end',
+    state,
+    options,
+  })
+
   if (!state.newSlides.length) {
     return
   }
@@ -897,9 +1009,11 @@ function buildSlideEntries (existing, state) {
   })
   const entryFor = (slide) => `    <p:sldId id="${slide.slideId}" r:id="${slide.relId}"/>`
   const startEntries = newSlides.filter((s) => s.position === 'start').map(entryFor)
+  const middleEntries = newSlides.filter((s) => s.position === 'middle').map(entryFor)
   const endEntries = newSlides.filter((s) => s.position === 'end').map(entryFor)
+  // 正确顺序：start -> existing -> middle -> end
   const xml = `<p:sldIdLst>
-${[...startEntries, ...existingEntries, ...endEntries].join('\n')}
+${[...startEntries, ...existingEntries, ...middleEntries, ...endEntries].join('\n')}
 </p:sldIdLst>`
   return { xml }
 }
@@ -1116,6 +1230,82 @@ function escapeRegex (str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// --- 并发控制工具函数 ---
+async function limitConcurrency (tasks, maxConcurrency) {
+  const results = []
+  const executing = []
+  for (const task of tasks) {
+    const promise = Promise.resolve(task()).then(result => {
+      executing.splice(executing.indexOf(promise), 1)
+      return result
+    })
+    results.push(promise)
+    executing.push(promise)
+    if (executing.length >= maxConcurrency) {
+      await Promise.race(executing)
+    }
+  }
+  return Promise.all(results)
+}
+
+// --- PDF 转换并发控制队列 ---
+class PdfConversionQueue {
+  constructor(maxConcurrency) {
+    this.maxConcurrency = maxConcurrency
+    this.running = 0
+    this.queue = []
+  }
+
+  async add (task) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ task, resolve, reject })
+      this.process()
+    })
+  }
+
+  async process () {
+    // 如果已达到最大并发数或队列为空，直接返回
+    if (this.running >= this.maxConcurrency || this.queue.length === 0) {
+      return
+    }
+
+    // 取出一个任务
+    const { task, resolve, reject } = this.queue.shift()
+    this.running++
+
+    try {
+      const result = await task()
+      resolve(result)
+    } catch (error) {
+      reject(error)
+    } finally {
+      this.running--
+      // 处理下一个任务
+      setImmediate(() => this.process())
+    }
+  }
+}
+
+// 创建全局 PDF 转换队列实例
+const pdfConversionQueue = new PdfConversionQueue(MAX_CONCURRENT_PDF_CONVERSIONS)
+
+// 模板文件缓存
+let templateBufferCache = null
+let templateZipCache = null
+
+async function getTemplateBuffer (templatePath) {
+  if (!templateBufferCache) {
+    templateBufferCache = await fs.readFile(templatePath)
+    templateZipCache = new PizZip(templateBufferCache)
+  }
+  return { buffer: templateBufferCache, zip: templateZipCache }
+}
+
+function clearTemplateCache () {
+  templateBufferCache = null
+  templateZipCache = null
+}
+
 function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber) {
   try {
     let ext = '.png'
@@ -1162,18 +1352,23 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
   }
 }
 
-async function copyTemplateSecondPageForImages (templatePath, outputPath, imageItems, employee) {
-  const [templateBuffer, outputBuffer] = await Promise.all([
-    fs.readFile(templatePath),
+// 按照模板顺序插入图片页面：inbody -> lab -> ecg -> ai
+async function insertImageSlidesByCategory (templatePath, outputPath, imageItems, employee, category, templateSlideNumber) {
+  const categoryImages = imageItems.filter(img => img.category === category)
+  if (categoryImages.length === 0) {
+    return
+  }
+
+  const [templateData, outputBuffer] = await Promise.all([
+    getTemplateBuffer(templatePath),
     fs.readFile(outputPath),
   ])
-  const templateZip = new PizZip(templateBuffer)
+  const templateZip = templateData.zip
   const outputZip = new PizZip(outputBuffer)
   const state = initializeState(outputZip, { employee, date: new Date() })
   const newSlides = []
-  for (const image of imageItems) {
-    const cat = image.category || 'other'
-    const templateSlideNumber = cat === 'inbody' ? 2 : cat === 'lab' ? 3 : cat === 'ecg' ? 4 : cat === 'ai' ? 5 : 3
+
+  for (const image of categoryImages) {
     const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
     const templateSlide = templateZip.file(templateSlidePath)
     if (!templateSlide) {
@@ -1200,9 +1395,10 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
     ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
     newSlides.push({
       slideNumber: newSlideNumber,
-      position: 'start',
+      position: 'middle', // 图片页面应该在封面之后，总结页之前
     })
   }
+
   if (!newSlides.length) {
     return
   }
@@ -1216,14 +1412,24 @@ async function copyTemplateSecondPageForImages (templatePath, outputPath, imageI
   await fs.writeFile(outputPath, updatedBuffer)
 }
 
-// --- 新增：PPTX 转 PDF 辅助函数 ---
-async function convertPptxToPdf (pptxPath) {
+// --- PPTX 转 PDF 核心转换函数（内部使用，带重试机制）---
+async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
+  const MAX_RETRIES = 2
+  const RETRY_DELAY = 1000 // 重试延迟1秒
+
   const pdfPath = pptxPath.replace(/\.pptx$/i, '.pdf')
+
+  // 添加小延迟，避免LibreOffice进程冲突
+  if (retryCount === 0) {
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+
   const pptxBuf = await fs.readFile(pptxPath)
   try {
     const pdfBuf = await convertAsync(pptxBuf, '.pdf', 'impress_pdf_Export')
     await fs.writeFile(pdfPath, pdfBuf)
   } catch (err) {
+    // 如果 libreoffice-convert 失败，使用 soffice 命令行
     const candidates = [
       process.env.LIBREOFFICE_PATH,
       process.env.SOFFICE_PATH,
@@ -1242,20 +1448,38 @@ async function convertPptxToPdf (pptxPath) {
     if (!sofficePath) {
       throw new Error('未找到 soffice，可设置 LIBREOFFICE_PATH 或 SOFFICE_PATH 指向 soffice.exe')
     }
+
     const outDir = path.dirname(pdfPath)
     await fs.ensureDir(outDir)
+
+    // 清理可能存在的旧PDF文件
+    if (await fs.pathExists(pdfPath)) {
+      try {
+        await fs.remove(pdfPath)
+      } catch { }
+    }
+
     await new Promise((resolve, reject) => {
       const args = [
         '--headless',
         '--invisible',
+        '--nodefault',
+        '--nolockcheck',
         '--convert-to',
         'pdf:impress_pdf_Export:{"ReduceImageResolution":false,"Quality":100}',
         '--outdir',
         outDir,
         pptxPath,
       ]
-      const child = spawn(sofficePath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(sofficePath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
       let stderr = ''
+      let stdout = ''
+      child.stdout.on('data', (d) => {
+        stdout += String(d)
+      })
       child.stderr.on('data', (d) => {
         stderr += String(d)
       })
@@ -1264,19 +1488,44 @@ async function convertPptxToPdf (pptxPath) {
         if (code === 0) {
           resolve()
         } else {
-          reject(new Error(`soffice 退出码 ${code}: ${stderr.trim()}`))
+          const errorMsg = stderr.trim() || stdout.trim() || '未知错误'
+          reject(new Error(`soffice 退出码 ${code}: ${errorMsg}`))
         }
       })
     })
+
+    // 等待文件生成
+    let attempts = 0
+    while (attempts < 10 && !(await fs.pathExists(pdfPath))) {
+      await new Promise(resolve => setTimeout(resolve, 200))
+      attempts++
+    }
+
     if (!(await fs.pathExists(pdfPath))) {
+      if (retryCount < MAX_RETRIES) {
+        console.warn(`⚠️ PDF 文件未生成，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return _convertPptxToPdfInternal(pptxPath, retryCount + 1)
+      }
       throw new Error('soffice 执行后未生成 PDF 文件')
     }
+
     const stat = await fs.stat(pdfPath)
     if (!stat.size) {
+      if (retryCount < MAX_RETRIES) {
+        console.warn(`⚠️ PDF 文件为空，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return _convertPptxToPdfInternal(pptxPath, retryCount + 1)
+      }
       throw new Error('生成的 PDF 为空')
     }
   }
   return pdfPath
+}
+
+// --- PPTX 转 PDF 公共接口（带并发控制）---
+async function convertPptxToPdf (pptxPath) {
+  return await pdfConversionQueue.add(() => _convertPptxToPdfInternal(pptxPath))
 }
 // --------------------------------
 
@@ -1319,7 +1568,85 @@ async function convertResultPptToPdf () {
   console.log(`❌ 失败: ${failCount} 个`)
 }
 
+async function processEmployee (employee, availableFiles, templatePath, layout, nameCounter) {
+  const assetInfo = await collectEmployeeAssets(employee, availableFiles)
+  const hasSummary = Boolean(assetInfo.summaryText.trim())
+  const hasAttachments = assetInfo.attachments.length > 0
+  if (!hasSummary && !hasAttachments) {
+    return {
+      success: false,
+      employee,
+      reason: '缺少体检结果与AI总结',
+    }
+  }
+
+  const pptx = initializePresentation(layout)
+  const currentCount = nameCounter.get(employee.name) || 0
+  const suffix = currentCount > 0 ? `_${currentCount}` : ''
+  const outputName = buildReportFileName(employee, suffix)
+  const outputPath = path.join(OUTPUT_DIR, outputName)
+  nameCounter.set(employee.name, currentCount + 1)
+
+  await pptx.writeFile({ fileName: outputPath })
+
+  const options = { employee, date: new Date(), summary: assetInfo.summaryText }
+
+  // 1. 先插入模板第1页（封面）
+  await insertCoverSlide(templatePath, outputPath, options)
+
+  // 2. 按照模板顺序插入图片页面：inbody -> lab -> ecg -> ai
+  const imageItems = await buildImageItems(assetInfo, employee)
+  if (imageItems.length > 0) {
+    // 按照模板顺序逐个插入
+    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'inbody', 2)
+    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'lab', 3)
+    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'ecg', 4)
+    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'ai', 5)
+  }
+
+  // 3. 插入建议与指导（文字）第6页（如果有 has6WhitePage）
+  if (has6WhitePage) {
+    await insertTextGuidanceSlide(templatePath, outputPath, options)
+  }
+
+  // 4. 最后插入结束页（第7页）
+  await insertSummarySlides(templatePath, outputPath, options)
+
+  // --- PDF 转换逻辑 ---
+  let finalOutputPath = outputPath
+  if (generatePdf) {
+    try {
+      console.log(`⏳ 正在转换为 PDF: ${outputName}...`)
+      const pdfPath = await convertPptxToPdf(outputPath)
+      console.log(`✓ PDF 生成成功: ${path.basename(pdfPath)}`)
+      try {
+        const stat = await fs.stat(pdfPath)
+        if (stat.size > 0) {
+          await fs.remove(outputPath)
+          console.log(`✓ 已删除 PPTX: ${path.basename(outputPath)}`)
+          // 更新最终输出路径为PDF路径
+          finalOutputPath = pdfPath
+        }
+      } catch (delErr) {
+        console.warn(`⚠️ 删除 PPTX 失败: ${delErr.message}`)
+      }
+    } catch (pdfErr) {
+      console.error(`❌ PDF 转换失败 (${employee.name}): ${pdfErr.message}`)
+      console.error(`   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`)
+      // PDF转换失败时，保留PPTX路径
+    }
+  }
+  // ------------------------
+
+  return {
+    success: true,
+    employee,
+    outputPath: finalOutputPath,
+  }
+}
+
 async function main () {
+  const startTime = Date.now()
   await fs.ensureDir(OUTPUT_DIR)
   await fs.ensureDir(PDF_IMAGE_DIR)
   await fs.ensureDir(PDF_TEMP_DIR)
@@ -1331,67 +1658,49 @@ async function main () {
     console.warn('⚠️ 员工表为空，已结束。')
     return
   }
+
+  // 预加载模板文件到缓存
+  await getTemplateBuffer(templatePath)
+
   const availableFiles = await safeReadDir(DATA_DIR)
   const successReports = []
   const skippedEmployees = []
   const nameCounter = new Map()
-  for (const employee of employees) {
+
+  // 创建处理任务
+  const tasks = employees.map(employee => async () => {
     try {
-      const assetInfo = await collectEmployeeAssets(employee, availableFiles)
-      const hasSummary = Boolean(assetInfo.summaryText.trim())
-      const hasAttachments = assetInfo.attachments.length > 0
-      if (!hasSummary && !hasAttachments) {
+      const result = await processEmployee(employee, availableFiles, templatePath, layout, nameCounter)
+      if (result.success) {
+        successReports.push({ employee: result.employee, outputPath: result.outputPath })
+        console.log(`✓ 已生成 ${result.employee.name}（${result.employee.id}）：${result.outputPath}`)
+      } else {
         skippedEmployees.push({
-          employee,
-          reason: '缺少体检结果与AI总结',
+          employee: result.employee,
+          reason: result.reason,
         })
-        continue
       }
-      const pptx = initializePresentation(layout)
-      const currentCount = nameCounter.get(employee.name) || 0
-      const suffix = currentCount > 0 ? `_${currentCount}` : ''
-      const outputName = buildReportFileName(employee, suffix)
-      const outputPath = path.join(OUTPUT_DIR, outputName)
-      nameCounter.set(employee.name, currentCount + 1)
-      await pptx.writeFile({ fileName: outputPath })
-      const imageItems = await buildImageItems(assetInfo, employee)
-      if (imageItems.length > 0) {
-        await copyTemplateSecondPageForImages(templatePath, outputPath, imageItems, employee)
-      }
-      await insertTemplateSlides(templatePath, outputPath, { employee, date: new Date(), summary: assetInfo.summaryText })
-
-      // --- 新增：PDF 转换逻辑 ---
-      if (generatePdf) {
-        try {
-          console.log(`⏳ 正在转换为 PDF: ${outputName}...`)
-          const pdfPath = await convertPptxToPdf(outputPath)
-          console.log(`✓ PDF 生成成功: ${path.basename(pdfPath)}`)
-          try {
-            const stat = await fs.stat(pdfPath)
-            if (stat.size > 0) {
-              await fs.remove(outputPath)
-              console.log(`✓ 已删除 PPTX: ${path.basename(outputPath)}`)
-            }
-          } catch (delErr) {
-            console.warn(`⚠️ 删除 PPTX 失败: ${delErr.message}`)
-          }
-        } catch (pdfErr) {
-          console.error(`❌ PDF 转换失败 (${employee.name}): ${pdfErr.message}`)
-          console.error(`   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`)
-        }
-      }
-      // ------------------------
-
-      successReports.push({ employee, outputPath })
-      console.log(`✓ 已生成 ${employee.name}（${employee.id}）：${outputPath}`)
+      return result
     } catch (error) {
       skippedEmployees.push({
         employee,
         reason: `生成失败：${error.message}`,
       })
       console.error(`❌ ${employee.name} 生成失败：${error.message}`)
+      return { success: false, employee, error }
     }
-  }
+  })
+
+  // 使用并发控制处理所有员工
+  console.log(`🚀 开始处理 ${employees.length} 个员工，并发数：${MAX_CONCURRENT_EMPLOYEES}`)
+  await limitConcurrency(tasks, MAX_CONCURRENT_EMPLOYEES)
+
+  // 清理模板缓存
+  clearTemplateCache()
+
+  const endTime = Date.now()
+  const duration = ((endTime - startTime) / 1000).toFixed(2)
+
   console.log('\n===== 生成统计 =====')
   console.log(`✅ 已生成：${successReports.length} 人`)
   successReports.forEach((item) => {
@@ -1401,6 +1710,7 @@ async function main () {
   skippedEmployees.forEach((item) => {
     console.log(`  - ${item.employee.name}（${item.employee.id}）：${item.reason}`)
   })
+  console.log(`⏱️ 总耗时：${duration} 秒`)
 }
 
 // 新增：处理result_add_suggest文件夹下的PPT文件名，添加证件号
