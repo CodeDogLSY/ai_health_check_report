@@ -1870,7 +1870,7 @@ async function extractIdFromPdfNames () {
 
       // 使用axios发送POST请求
       const response = await axios.post(
-        `https://product.cajcare.com:5182/wechat/yd/sunflower/sendFileToUser?userId=${encodeURIComponent(userId)}`,
+        `https://product.cajcare.com:5182/wechat/caj/sunflower/sendFileToUser?userId=${encodeURIComponent(userId)}`,
         formData,
         {
           headers: {
