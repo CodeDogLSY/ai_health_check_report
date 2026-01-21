@@ -2212,12 +2212,6 @@ if (args.includes("--convert-ppt-pdf")) {
     console.error("❌ 重命名失败：", error)
     process.exitCode = 1
   })
-} else if (args.includes("--send-wechat-ee-msg")) {
-  // 将文件通过身份证号匹配然后发送企业微信
-  sendWechatEeMsg().catch((error) => {
-    console.error("❌ 提取失败：", error)
-    process.exitCode = 1
-  })
 } else {
   // 执行原始主流程
   main().catch((error) => {
