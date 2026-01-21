@@ -1,20 +1,36 @@
-const path = require('path')
-const fs = require('fs-extra')
-const ExcelJS = require('exceljs')
-const PizZip = require('pizzip')
-const PptxGenJS = require('pptxgenjs')
-const mammoth = require('mammoth')
-const { fromPath: pdfFromPath } = require('pdf2pic')
-const { createCanvas } = require('canvas')
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js')
-const crypto = require('crypto')
-const libre = require('libreoffice-convert')
-const util = require('util')
+/**
+ * 员工体检报告批量生成脚本
+ * - 从「员工表.xlsx」读取员工信息
+ * - 在 data/ 目录匹配员工附件（图片、PDF、AI总结docx）
+ * - 基于 PPTX 模板插入：封面 -> 附件页(按类别) -> 指导页(可选) -> 结束页
+ * - 可选：将生成的 PPTX 转成 PDF，并在成功后删除 PPTX
+ *
+ * CLI:
+ *   node merged.js                 # 主流程：生成报告
+ *   node merged.js --convert-ppt-pdf      # 转换 result_add_suggest/ 下所有 PPTX 为 PDF
+ *   node merged.js --rename-ppt-files     # 给 result_add_suggest/ 下 PPTX 文件名补充证件号
+ *   node merged.js --extract-id-from-pdf  # 读取 send_data/ 下 PDF，提取证件号并尝试发送企信
+ *
+ */
+
+const path = require("path")
+const fs = require("fs-extra")
+const ExcelJS = require("exceljs")
+const PizZip = require("pizzip")
+const PptxGenJS = require("pptxgenjs")
+const mammoth = require("mammoth")
+const { fromPath: pdfFromPath } = require("pdf2pic")
+const { createCanvas } = require("canvas")
+const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js")
+const crypto = require("crypto")
+const libre = require("libreoffice-convert")
+const util = require("util")
 const convertAsync = util.promisify(libre.convert)
-const { spawn } = require('child_process')
+const { spawn } = require("child_process")
 // --------------------------------------------
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.js')
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  require.resolve("pdfjs-dist/legacy/build/pdf.worker.js")
 
 //是否带第六页指导页
 const has6WhitePage = false
@@ -23,56 +39,56 @@ const generatePdf = true
 //name中加入id开关 false 不添加 true 添加
 const addId = true
 
-const ROOT = path.resolve(__dirname, '.')
-const DATA_DIR = path.join(ROOT, 'data')
-const OUTPUT_DIR = path.join(ROOT, 'output')
-const PDF_IMAGE_DIR = path.join(OUTPUT_DIR, '_pdf_images')
-const PDF_TEMP_DIR = path.join(PDF_IMAGE_DIR, '_tmp')
+const ROOT = path.resolve(__dirname, ".")
+const DATA_DIR = path.join(ROOT, "data")
+const OUTPUT_DIR = path.join(ROOT, "output")
+const PDF_IMAGE_DIR = path.join(OUTPUT_DIR, "_pdf_images")
+const PDF_TEMP_DIR = path.join(PDF_IMAGE_DIR, "_tmp")
 
 // 并发控制配置
 const MAX_CONCURRENT_EMPLOYEES = 6 // 同时处理的员工数量
 const MAX_CONCURRENT_PDF_CONVERSIONS = 1 // 同时进行的 PDF 转换数量（Windows上建议设为1以确保稳定性）
 
-const TEMPLATE_CANDIDATES = ['2025员工体检报告（模板）.pptx', 'template.pptx']
-const EMPLOYEE_SHEET_CANDIDATES = ['员工表.xlsx', 'employees.xlsx']
+const TEMPLATE_CANDIDATES = ["2025员工体检报告（模板）.pptx", "template.pptx"]
+const EMPLOYEE_SHEET_CANDIDATES = ["员工表.xlsx", "employees.xlsx"]
 
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp'])
-const PDF_EXTENSIONS = new Set(['.pdf'])
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp"])
+const PDF_EXTENSIONS = new Set([".pdf"])
 const EMU_PER_INCH = 914400
 
 const DEFAULT_LAYOUT = {
   width: 10,
   height: 5.625,
-  orientation: 'landscape',
+  orientation: "landscape",
 }
 
-function normalizeName (value, id = '') {
-  if (!value) return ''
+function normalizeName (value, id = "") {
+  if (!value) return ""
   const namePart = String(value)
-    .replace(/\.[^.]+$/, '')
-    .replace(/\s+/g, '')
+    .replace(/\.[^.]+$/, "")
+    .replace(/\s+/g, "")
     .toLowerCase()
   if (id) {
-    return namePart + id.toLowerCase().replace(/\s+/g, '')
+    return namePart + id.toLowerCase().replace(/\s+/g, "")
   }
   const match = namePart.match(/^([^-]+)-([^-]+)/)
   if (match) {
     return match[1] + match[2]
   }
-  return namePart.replace(/[-_].*$/, '')
+  return namePart.replace(/[-_].*$/, "")
 }
 
 function normalizeText (value) {
-  if (value === undefined || value === null) return ''
+  if (value === undefined || value === null) return ""
   return String(value).trim()
 }
 
 function sanitizeForFilename (value) {
-  return value.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, '')
+  return value.replace(/[<>:"/\\|?*]/g, "").replace(/\s+/g, "")
 }
 
 function buildAsciiSafeLabel (value) {
-  const sanitized = sanitizeForFilename(value).replace(/[^\x00-\x7F]/g, '')
+  const sanitized = sanitizeForFilename(value).replace(/[^\x00-\x7F]/g, "")
   if (sanitized) {
     return sanitized
   }
@@ -80,8 +96,8 @@ function buildAsciiSafeLabel (value) {
 }
 
 function formatDate (date) {
-  const hh = String(date.getHours()).padStart(2, '0')
-  const mi = String(date.getMinutes()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, "0")
+  const mi = String(date.getMinutes()).padStart(2, "0")
   return `${hh}${mi}`
 }
 
@@ -95,7 +111,9 @@ async function resolveExistingPath (candidates, label) {
       return fullPath
     }
   }
-  throw new Error(`${label}缺失，请确认以下文件之一存在：${candidates.join(', ')}`)
+  throw new Error(
+    `${label}缺失，请确认以下文件之一存在：${candidates.join(", ")}`,
+  )
 }
 
 async function loadTemplateLayout (templatePath) {
@@ -106,12 +124,14 @@ async function loadTemplateLayout (templatePath) {
   try {
     const buffer = await fs.readFile(templatePath)
     const zip = new PizZip(buffer)
-    const presentationFile = zip.file('ppt/presentation.xml')
+    const presentationFile = zip.file("ppt/presentation.xml")
     if (!presentationFile) {
       return fallback
     }
     const xml = presentationFile.asText()
-    const sizeMatch = xml.match(/<p:sldSz[^>]*cx=["'](\d+)["'][^>]*cy=["'](\d+)["']/)
+    const sizeMatch = xml.match(
+      /<p:sldSz[^>]*cx=["'](\d+)["'][^>]*cy=["'](\d+)["']/,
+    )
     if (!sizeMatch) {
       return fallback
     }
@@ -122,10 +142,12 @@ async function loadTemplateLayout (templatePath) {
     }
     const width = Number((widthEmu / EMU_PER_INCH).toFixed(3))
     const height = Number((heightEmu / EMU_PER_INCH).toFixed(3))
-    const orientation = width >= height ? 'landscape' : 'portrait'
+    const orientation = width >= height ? "landscape" : "portrait"
     return { width, height, orientation }
   } catch (error) {
-    console.warn(`⚠️ 模板布局解析失败，将使用默认 16:9 布局。原因：${error.message}`)
+    console.warn(
+      `⚠️ 模板布局解析失败，将使用默认 16:9 布局。原因：${error.message}`,
+    )
     return fallback
   }
 }
@@ -141,24 +163,26 @@ async function loadEmployees (sheetPath) {
     return []
   }
   const headerRow = worksheet.getRow(1)
-  const headers = headerRow.values.map((value) => (typeof value === 'string' ? value.trim() : value))
+  const headers = headerRow.values.map((value) =>
+    typeof value === "string" ? value.trim() : value,
+  )
   const employees = []
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return
     const record = {}
     row.values.forEach((cell, cellIndex) => {
       const header = headers[cellIndex]
-      if (!header || typeof header !== 'string') return
-      record[header] = typeof cell === 'string' ? cell.trim() : cell
+      if (!header || typeof header !== "string") return
+      record[header] = typeof cell === "string" ? cell.trim() : cell
     })
-    const name = normalizeText(record['姓名'] || record['name'])
+    const name = normalizeText(record["姓名"] || record["name"])
     if (!name) return
     employees.push({
       name,
-      gender: normalizeText(record['性别']) || '未知',
-      age: normalizeText(record['年龄']) || '未知',
-      id: normalizeText(record['证件号']) || '未知',
-      date: normalizeText(record['体检日期']) || '未知',
+      gender: normalizeText(record["性别"]) || "未知",
+      age: normalizeText(record["年龄"]) || "未知",
+      id: normalizeText(record["证件号"]) || "未知",
+      date: normalizeText(record["体检日期"]) || "未知",
       raw: record,
     })
   })
@@ -173,63 +197,82 @@ async function safeReadDir (dir) {
   return fs.readdir(dir)
 }
 
+/**
+ * 根据文件名关键字为附件分配“显示顺序优先级”（数值越小越靠前）。
+ * 规则保持与原逻辑一致，仅抽成函数方便维护。
+ */
+function getAttachmentPriority (lowerFileName) {
+  if (lowerFileName.includes("inbody")) return 1
+  if (lowerFileName.includes("尿常规") || lowerFileName.includes("尿检"))
+    return 2
+  if (lowerFileName.includes("血常规")) return 3
+  if (lowerFileName.includes("生化检查")) return 4
+  if (lowerFileName.includes("糖化血红蛋白")) return 5
+  if (lowerFileName.includes("心电图")) return 6
+  if (lowerFileName.includes("ai解读")) return 7
+  return 99
+}
+
+/**
+ * 根据文件名关键字给附件分类（用于匹配模板页：inbody / lab / ecg / ai）。
+ * 规则保持与原逻辑一致。
+ */
+function getAttachmentCategory (lowerFileName) {
+  if (lowerFileName.includes("inbody")) return "inbody"
+  if (lowerFileName.includes("心电图")) return "ecg"
+  if (
+    lowerFileName.includes("尿常规") ||
+    lowerFileName.includes("尿检") ||
+    lowerFileName.includes("血常规") ||
+    lowerFileName.includes("生化检查") ||
+    lowerFileName.includes("糖化血红蛋白")
+  ) {
+    return "lab"
+  }
+  if (lowerFileName.includes("ai解读")) return "ai"
+  return "other"
+}
+
 async function collectEmployeeAssets (employee, files) {
   const normalized = normalizeName(employee.name, employee.id)
-  const matchingFiles = files.filter((file) => normalizeName(file) === normalized)
+  const matchingFiles = files.filter(
+    (file) => normalizeName(file) === normalized,
+  )
   const summaryFile = matchingFiles.find(
-    (file) => file.includes('总结') && path.extname(file).toLowerCase() === '.docx',
+    (file) =>
+      file.includes("总结") && path.extname(file).toLowerCase() === ".docx",
   )
   const summaryText = summaryFile
     ? await extractSummaryText(path.join(DATA_DIR, summaryFile))
-    : ''
+    : ""
   const attachments = matchingFiles
     .filter((file) => file !== summaryFile)
     .map((file) => {
+      const fullPath = path.join(DATA_DIR, file)
       const ext = path.extname(file).toLowerCase()
-      const type = IMAGE_EXTENSIONS.has(ext) ? 'image' : PDF_EXTENSIONS.has(ext) ? 'pdf' : 'other'
+      const type = IMAGE_EXTENSIONS.has(ext)
+        ? "image"
+        : PDF_EXTENSIONS.has(ext)
+          ? "pdf"
+          : "other"
       const label = buildAttachmentLabel(file)
       const lower = file.toLowerCase()
-      let priority = 99
-      if (lower.includes('inbody')) {
-        priority = 1
-      } else if (lower.includes('尿常规') || lower.includes('尿检')) {
-        priority = 2
-      } else if (lower.includes('血常规')) {
-        priority = 3
-      } else if (lower.includes('生化检查')) {
-        priority = 4
-      } else if (lower.includes('糖化血红蛋白')) {
-        priority = 5
-      } else if (lower.includes('心电图')) {
-        priority = 6
-      } else if (lower.includes('ai解读')) {
-        priority = 7
-      }
-      let category = 'other'
-      if (lower.includes('inbody')) {
-        category = 'inbody'
-      } else if (lower.includes('心电图')) {
-        category = 'ecg'
-      } else if (lower.includes('尿常规') || lower.includes('尿检') || lower.includes('血常规') || lower.includes('生化检查') || lower.includes('糖化血红蛋白')) {
-        category = 'lab'
-      } else if (lower.includes('ai解读')) {
-        category = 'ai'
-      }
+
       return {
         fileName: file,
-        fullPath: path.join(DATA_DIR, file),
+        fullPath,
         label,
         type,
         ext,
-        priority,
-        category,
+        priority: getAttachmentPriority(lower),
+        category: getAttachmentCategory(lower),
       }
     })
     .sort((a, b) => a.priority - b.priority)
   return {
     employee,
     summaryFile: summaryFile ? path.join(DATA_DIR, summaryFile) : null,
-    summaryText: summaryText || '',
+    summaryText: summaryText || "",
     attachments,
     totalFiles: matchingFiles.length,
   }
@@ -239,20 +282,20 @@ async function extractSummaryText (filePath) {
   try {
     const { value } = await mammoth.extractRawText({ path: filePath })
     return value
-      .split('\n')
+      .split("\n")
       .map((item) => item.trim())
       .filter(Boolean)
-      .join('\n')
+      .join("\n")
   } catch (error) {
     console.warn(`⚠️ 无法读取AI总结：${filePath}，原因：${error.message}`)
-    return ''
+    return ""
   }
 }
 
 function buildAttachmentLabel (fileName) {
   const base = path.basename(fileName, path.extname(fileName))
   const parts = base.split(/[-_]/)
-  return parts.slice(1).join('-') || '附件'
+  return parts.slice(1).join("-") || "附件"
 }
 
 async function buildImageItems (assetInfo, employee) {
@@ -261,20 +304,20 @@ async function buildImageItems (assetInfo, employee) {
 
   // 先收集所有图片
   for (const attachment of assetInfo.attachments) {
-    if (attachment.type === 'image') {
+    if (attachment.type === "image") {
       imageItems.push({
         label: attachment.label,
         fullPath: attachment.fullPath,
         category: attachment.category,
       })
-    } else if (attachment.type === 'pdf') {
+    } else if (attachment.type === "pdf") {
       pdfTasks.push(() => convertPdfAttachment(attachment, employee))
     }
   }
 
   // 并行处理所有 PDF 转换
   if (pdfTasks.length > 0) {
-    const convertedResults = await Promise.all(pdfTasks.map(task => task()))
+    const convertedResults = await Promise.all(pdfTasks.map((task) => task()))
     for (const converted of convertedResults) {
       imageItems.push(...converted)
     }
@@ -284,25 +327,42 @@ async function buildImageItems (assetInfo, employee) {
 }
 
 async function convertPdfAttachment (pdfAttachment, employee) {
-  let tempPdfPath = ''
+  let tempPdfPath = ""
   try {
-    const safeLabel = buildAsciiSafeLabel(`${employee.id}_${employee.name}_${pdfAttachment.label}`)
+    const safeLabel = buildAsciiSafeLabel(
+      `${employee.id}_${employee.name}_${pdfAttachment.label}`,
+    )
     const tempPdfName = `${crypto.randomUUID()}.pdf`
     tempPdfPath = path.join(PDF_TEMP_DIR, tempPdfName)
     await fs.ensureDir(PDF_TEMP_DIR)
     await fs.copyFile(pdfAttachment.fullPath, tempPdfPath)
-    const pagesFromPic = await convertWithPdf2Pic(tempPdfPath, pdfAttachment, safeLabel)
+    const pagesFromPic = await convertWithPdf2Pic(
+      tempPdfPath,
+      pdfAttachment,
+      safeLabel,
+    )
     if (pagesFromPic.length) {
-      return pagesFromPic.map((p) => ({ ...p, category: pdfAttachment.category }))
+      return pagesFromPic.map((p) => ({
+        ...p,
+        category: pdfAttachment.category,
+      }))
     }
     console.warn(`⚠️ pdf2pic 转换未返回结果，尝试使用 pdfjs-dist 兜底...`)
-    const pdfImgPages = await convertWithPdfRenderer(tempPdfPath, pdfAttachment)
+    const pdfImgPages = await convertWithPdfRenderer(
+      tempPdfPath,
+      pdfAttachment,
+    )
     if (pdfImgPages.length) {
-      return pdfImgPages.map((p) => ({ ...p, category: pdfAttachment.category }))
+      return pdfImgPages.map((p) => ({
+        ...p,
+        category: pdfAttachment.category,
+      }))
     }
     return []
   } catch (error) {
-    console.warn(`⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`)
+    console.warn(
+      `⚠️ PDF 转图失败（${pdfAttachment.fileName}）：${error.message}`,
+    )
     return []
   } finally {
     if (tempPdfPath) {
@@ -318,7 +378,7 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
     const pdfDoc = await pdfjsLib.getDocument({
       data: pdfData,
       verbosity: 0,
-      cMapUrl: './node_modules/pdfjs-dist/cmaps/',
+      cMapUrl: "./node_modules/pdfjs-dist/cmaps/",
       cMapPacked: true,
     }).promise
 
@@ -329,20 +389,22 @@ async function convertWithPdfRenderer (pdfPath, attachment) {
         const page = await pdfDoc.getPage(pageNumber)
         const viewport = page.getViewport({ scale: 10 })
         const canvas = createCanvas(viewport.width, viewport.height)
-        const context = canvas.getContext('2d')
+        const context = canvas.getContext("2d")
         await page.render({ canvasContext: context, viewport }).promise
-        const imageBuffer = canvas.toBuffer('image/png')
+        const imageBuffer = canvas.toBuffer("image/png")
         return {
           label: `${attachment.label} 第${pageNumber}页`,
-          data: `data:image/png;base64,${imageBuffer.toString('base64')}`,
+          data: `data:image/png;base64,${imageBuffer.toString("base64")}`,
         }
       })
     }
 
-    const pages = await Promise.all(pageTasks.map(task => task()))
+    const pages = await Promise.all(pageTasks.map((task) => task()))
     return pages
   } catch (error) {
-    console.warn(`⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`)
+    console.warn(
+      `⚠️ 内置 PDF 渲染失败（${attachment.fileName}）：${error.message}`,
+    )
     return []
   }
 }
@@ -352,19 +414,21 @@ async function convertWithPdf2Pic (pdfPath, attachment, safeLabel) {
     await fs.ensureDir(PDF_IMAGE_DIR)
     const convert = pdfFromPath(pdfPath, {
       density: 900,
-      format: 'png',
+      format: "png",
       width: 2400,
       height: 1600,
       saveFilename: safeLabel,
       savePath: PDF_IMAGE_DIR,
     })
-    const pages = await convert.bulk(-1, { responseType: 'base64' })
+    const pages = await convert.bulk(-1, { responseType: "base64" })
     return pages.map((pageResult, idx) => ({
       label: `${attachment.label} 第${pageResult.page || idx + 1}页`,
       data: `data:image/png;base64,${pageResult.base64}`,
     }))
   } catch (error) {
-    console.warn(`⚠️ pdf2pic 转换失败（${attachment.fileName}）：${error.message}`)
+    console.warn(
+      `⚠️ pdf2pic 转换失败（${attachment.fileName}）：${error.message}`,
+    )
     return []
   }
 }
@@ -378,18 +442,18 @@ function initializePresentation (layout) {
     height: layout.height,
   })
   pptx.layout = layoutName
-  pptx.author = 'Health Manage AI'
-  pptx.company = 'Health Manage AI'
-  pptx.subject = '员工体检报告'
-  pptx.title = '2025 员工体检报告'
+  pptx.author = "Health Manage AI"
+  pptx.company = "Health Manage AI"
+  pptx.subject = "员工体检报告"
+  pptx.title = "2025 员工体检报告"
   return pptx
 }
 
-function buildReportFileName (employee, suffix = '') {
+function buildReportFileName (employee, suffix = "") {
   const safeName = sanitizeForFilename(employee.name)
   const safeId = sanitizeForFilename(employee.id)
   const dateStr = formatDate(new Date())
-  const idPart = addId ? `_${safeId}` : ''
+  const idPart = addId ? `_${safeId}` : ""
   if (suffix) {
     // return `员工体检报告_${safeName}${suffix}_${dateStr}.pptx`
     return `体检报告_${safeName}${idPart}${suffix}.pptx`
@@ -398,55 +462,65 @@ function buildReportFileName (employee, suffix = '') {
 }
 
 const CONTENT_TYPES = {
-  slide: 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml',
-  slideLayout: 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
-  slideMaster: 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
-  theme: 'application/vnd.openxmlformats-officedocument.theme+xml',
+  slide:
+    "application/vnd.openxmlformats-officedocument.presentationml.slide+xml",
+  slideLayout:
+    "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml",
+  slideMaster:
+    "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml",
+  theme: "application/vnd.openxmlformats-officedocument.theme+xml",
 }
 
 const REL_TYPES = {
-  slide: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide',
-  slideLayout: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout',
-  slideMaster: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster',
-  theme: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme',
-  image: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
+  slide:
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+  slideLayout:
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout",
+  slideMaster:
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster",
+  theme:
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+  image:
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
 }
 
-async function insertTemplateSlides (templatePath, outputPath, options = {}) {
+/**
+ * 插入模板中的「单页」到目标 PPTX。
+ * 说明：此函数只负责把模板页复制进目标文件，并更新 presentation / rels / content-types。
+ * 图片、文字占位符的替换由 copyTemplateSlide 内部处理（封面页）或后续图片页函数处理。
+ */
+async function insertTemplateSlide ({
+  templatePath,
+  outputPath,
+  templateSlideNumber,
+  position,
+  options = {},
+}) {
   const [templateData, outputBuffer] = await Promise.all([
     getTemplateBuffer(templatePath),
     fs.readFile(outputPath),
   ])
   const templateZip = templateData.zip
   const outputZip = new PizZip(outputBuffer)
-
-  const slidesToCopy = has6WhitePage ?
-    [
-      { templateSlide: 1, position: 'start' },
-      { templateSlide: 6, position: 'end' },
-      { templateSlide: 7, position: 'end' },
-    ] : [
-      { templateSlide: 1, position: 'start' },
-      { templateSlide: 7, position: 'end' },
-    ]
   const state = initializeState(outputZip, options)
-  for (const config of slidesToCopy) {
-    copyTemplateSlide({
-      templateZip,
-      outputZip,
-      templateSlideNumber: config.templateSlide,
-      position: config.position,
-      state,
-      options,
-    })
-  }
+
+  copyTemplateSlide({
+    templateZip,
+    outputZip,
+    templateSlideNumber,
+    position,
+    state,
+    options,
+  })
+
   if (!state.newSlides.length) {
     return
   }
+
   updatePresentationDocuments(outputZip, state)
   const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
+    type: "nodebuffer",
+    compression: "DEFLATE",
     compressionOptions: { level: 6 },
   })
   await fs.writeFile(outputPath, updatedBuffer)
@@ -454,119 +528,61 @@ async function insertTemplateSlides (templatePath, outputPath, options = {}) {
 
 // 分别插入封面和总结页的函数
 async function insertCoverSlide (templatePath, outputPath, options = {}) {
-  const [templateData, outputBuffer] = await Promise.all([
-    getTemplateBuffer(templatePath),
-    fs.readFile(outputPath),
-  ])
-  const templateZip = templateData.zip
-  const outputZip = new PizZip(outputBuffer)
-  const state = initializeState(outputZip, options)
-
-  copyTemplateSlide({
-    templateZip,
-    outputZip,
+  return insertTemplateSlide({
+    templatePath,
+    outputPath,
     templateSlideNumber: 1,
-    position: 'start',
-    state,
+    position: "start",
     options,
   })
-
-  if (!state.newSlides.length) {
-    return
-  }
-  updatePresentationDocuments(outputZip, state)
-  const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  })
-  await fs.writeFile(outputPath, updatedBuffer)
 }
 
 async function insertTextGuidanceSlide (templatePath, outputPath, options = {}) {
-  const [templateData, outputBuffer] = await Promise.all([
-    getTemplateBuffer(templatePath),
-    fs.readFile(outputPath),
-  ])
-  const templateZip = templateData.zip
-  const outputZip = new PizZip(outputBuffer)
-  const state = initializeState(outputZip, options)
-
-  copyTemplateSlide({
-    templateZip,
-    outputZip,
+  return insertTemplateSlide({
+    templatePath,
+    outputPath,
     templateSlideNumber: 6,
-    position: 'middle', // 在图片页面之后，结束页之前
-    state,
+    position: "middle", // 在图片页之后、结束页之前
     options,
   })
-
-  if (!state.newSlides.length) {
-    return
-  }
-  updatePresentationDocuments(outputZip, state)
-  const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  })
-  await fs.writeFile(outputPath, updatedBuffer)
 }
 
 async function insertSummarySlides (templatePath, outputPath, options = {}) {
-  const [templateData, outputBuffer] = await Promise.all([
-    getTemplateBuffer(templatePath),
-    fs.readFile(outputPath),
-  ])
-  const templateZip = templateData.zip
-  const outputZip = new PizZip(outputBuffer)
-  const state = initializeState(outputZip, options)
-
-  copyTemplateSlide({
-    templateZip,
-    outputZip,
+  return insertTemplateSlide({
+    templatePath,
+    outputPath,
     templateSlideNumber: 7,
-    position: 'end',
-    state,
+    position: "end",
     options,
   })
-
-  if (!state.newSlides.length) {
-    return
-  }
-  updatePresentationDocuments(outputZip, state)
-  const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  })
-  await fs.writeFile(outputPath, updatedBuffer)
 }
 
 function initializeState (zip, options) {
-  const presentationXml = zip.file('ppt/presentation.xml')
-  const presentationRels = zip.file('ppt/_rels/presentation.xml.rels')
-  const contentTypes = zip.file('[Content_Types].xml')
+  const presentationXml = zip.file("ppt/presentation.xml")
+  const presentationRels = zip.file("ppt/_rels/presentation.xml.rels")
+  const contentTypes = zip.file("[Content_Types].xml")
   if (!presentationXml || !presentationRels || !contentTypes) {
-    throw new Error('目标 PPT 结构不完整，缺少 presentation 元数据')
+    throw new Error("目标 PPT 结构不完整，缺少 presentation 元数据")
   }
   const presContent = presentationXml.asText()
   const presRelsContent = presentationRels.asText()
 
   // 修复：使用更宽松的正则匹配 ID，支持单双引号
-  const slideIdMatches = [...presContent.matchAll(/<p:sldId[^>]*id=["'](\d+)["']/g)]
+  const slideIdMatches = [
+    ...presContent.matchAll(/<p:sldId[^>]*id=["'](\d+)["']/g),
+  ]
   const existingSlideIds = new Set(
-    slideIdMatches.map((m) => parseInt(m[1], 10))
+    slideIdMatches.map((m) => parseInt(m[1], 10)),
   )
 
   const relIdMatches = [...presRelsContent.matchAll(/Id=["']rId(\d+)["']/g)]
-  const existingRelIds = new Set(
-    relIdMatches.map((m) => parseInt(m[1], 10))
-  )
+  const existingRelIds = new Set(relIdMatches.map((m) => parseInt(m[1], 10)))
 
-  const masterIdMatches = [...presContent.matchAll(/<p:sldMasterId[^>]*id=["'](\d+)["']/g)]
+  const masterIdMatches = [
+    ...presContent.matchAll(/<p:sldMasterId[^>]*id=["'](\d+)["']/g),
+  ]
   const existingMasterIds = new Set(
-    masterIdMatches.map((m) => parseInt(m[1], 10))
+    masterIdMatches.map((m) => parseInt(m[1], 10)),
   )
 
   const slideFiles = zip.file(/^ppt\/slides\/slide\d+\.xml$/i)
@@ -632,7 +648,14 @@ function getNextNumber (files, regex) {
   return Math.max(...numbers) + 1
 }
 
-function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, position, state, options }) {
+function copyTemplateSlide ({
+  templateZip,
+  outputZip,
+  templateSlideNumber,
+  position,
+  state,
+  options,
+}) {
   const templateSlidePath = `ppt/slides/slide${templateSlideNumber}.xml`
   const templateSlide = templateZip.file(templateSlidePath)
   if (!templateSlide) {
@@ -642,7 +665,7 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
   const newSlideNumber = state.nextSlideNumber++
   const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
   let slideXml = templateSlide.asText()
-  if (position === 'start') {
+  if (position === "start") {
     slideXml = applyCoverPlaceholders(slideXml, options.employee)
   }
   outputZip.file(newSlidePath, slideXml)
@@ -653,14 +676,24 @@ function copyTemplateSlide ({ templateZip, outputZip, templateSlideNumber, posit
     newSlideNumber,
     state,
   })
-  ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
+  ensureContentType(
+    state,
+    `/ppt/slides/slide${newSlideNumber}.xml`,
+    CONTENT_TYPES.slide,
+  )
   state.newSlides.push({
     slideNumber: newSlideNumber,
     position,
   })
 }
 
-function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber, newSlideNumber, state }) {
+function cloneSlideRelationships ({
+  templateZip,
+  outputZip,
+  templateSlideNumber,
+  newSlideNumber,
+  state,
+}) {
   const relsPath = `ppt/slides/_rels/slide${templateSlideNumber}.xml.rels`
   const templateRels = templateZip.file(relsPath)
   const newRelsPath = `ppt/slides/_rels/slide${newSlideNumber}.xml.rels`
@@ -671,34 +704,52 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
   const relItems = parseRelationships(templateRels.asText())
   const updated = relItems.map((rel) => {
     if (rel.Type === REL_TYPES.slideLayout) {
-      const absolutePath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
+      const absolutePath = resolveRelationshipPath(
+        `ppt/slides/slide${templateSlideNumber}.xml`,
+        rel.Target,
+      )
       const layoutInfo = ensureLayoutAssets({
         templateZip,
         outputZip,
         templateLayoutPath: absolutePath,
         state,
       })
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, layoutInfo.newPath)
+      rel.Target = relativePath(
+        `ppt/slides/slide${newSlideNumber}.xml`,
+        layoutInfo.newPath,
+      )
       return rel
     }
     if (rel.Type === REL_TYPES.image) {
       const mapKey = `slide${newSlideNumber}_main`
       if (state.mediaMap.has(mapKey)) {
         const newMediaTarget = state.mediaMap.get(mapKey)
-        rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
+        rel.Target = relativePath(
+          `ppt/slides/slide${newSlideNumber}.xml`,
+          newMediaTarget,
+        )
         return rel
       }
-      const absoluteMediaPath = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
+      const absoluteMediaPath = resolveRelationshipPath(
+        `ppt/slides/slide${templateSlideNumber}.xml`,
+        rel.Target,
+      )
       const newMediaTarget = copyMediaFile({
         templateZip,
         outputZip,
         sourcePath: absoluteMediaPath,
         state,
       })
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newMediaTarget)
+      rel.Target = relativePath(
+        `ppt/slides/slide${newSlideNumber}.xml`,
+        newMediaTarget,
+      )
       return rel
     }
-    const absoluteTarget = resolveRelationshipPath(`ppt/slides/slide${templateSlideNumber}.xml`, rel.Target)
+    const absoluteTarget = resolveRelationshipPath(
+      `ppt/slides/slide${templateSlideNumber}.xml`,
+      rel.Target,
+    )
     const newTarget = copyGenericPart({
       templateZip,
       outputZip,
@@ -706,14 +757,22 @@ function cloneSlideRelationships ({ templateZip, outputZip, templateSlideNumber,
       state,
     })
     if (newTarget) {
-      rel.Target = relativePath(`ppt/slides/slide${newSlideNumber}.xml`, newTarget)
+      rel.Target = relativePath(
+        `ppt/slides/slide${newSlideNumber}.xml`,
+        newTarget,
+      )
     }
     return rel
   })
   outputZip.file(newRelsPath, buildRelationshipsXml(updated))
 }
 
-function ensureLayoutAssets ({ templateZip, outputZip, templateLayoutPath, state }) {
+function ensureLayoutAssets ({
+  templateZip,
+  outputZip,
+  templateLayoutPath,
+  state,
+}) {
   if (state.layoutMap.has(templateLayoutPath)) {
     return state.layoutMap.get(templateLayoutPath)
   }
@@ -727,7 +786,10 @@ function ensureLayoutAssets ({ templateZip, outputZip, templateLayoutPath, state
   if (!masterRel) {
     throw new Error(`布局文件未关联母版：${templateLayoutPath}`)
   }
-  const masterPath = resolveRelationshipPath(templateLayoutPath, masterRel.Target)
+  const masterPath = resolveRelationshipPath(
+    templateLayoutPath,
+    masterRel.Target,
+  )
   ensureMasterAssets({
     templateZip,
     outputZip,
@@ -740,7 +802,12 @@ function ensureLayoutAssets ({ templateZip, outputZip, templateLayoutPath, state
   return state.layoutMap.get(templateLayoutPath)
 }
 
-function ensureMasterAssets ({ templateZip, outputZip, templateMasterPath, state }) {
+function ensureMasterAssets ({
+  templateZip,
+  outputZip,
+  templateMasterPath,
+  state,
+}) {
   if (state.masterMap.has(templateMasterPath)) {
     return state.masterMap.get(templateMasterPath)
   }
@@ -760,7 +827,10 @@ function ensureMasterAssets ({ templateZip, outputZip, templateMasterPath, state
     const relItems = parseRelationships(templateRels.asText())
     const updated = relItems.map((rel) => {
       if (rel.Type === REL_TYPES.theme) {
-        const themePath = resolveRelationshipPath(templateMasterPath, rel.Target)
+        const themePath = resolveRelationshipPath(
+          templateMasterPath,
+          rel.Target,
+        )
         themeInfo = ensureThemeAssets({
           templateZip,
           outputZip,
@@ -771,7 +841,10 @@ function ensureMasterAssets ({ templateZip, outputZip, templateMasterPath, state
         return rel
       }
       if (rel.Type === REL_TYPES.slideLayout) {
-        const layoutPath = resolveRelationshipPath(templateMasterPath, rel.Target)
+        const layoutPath = resolveRelationshipPath(
+          templateMasterPath,
+          rel.Target,
+        )
         const layoutInfo = copyLayoutFromMaster({
           templateZip,
           outputZip,
@@ -806,7 +879,13 @@ function ensureMasterAssets ({ templateZip, outputZip, templateMasterPath, state
   return info
 }
 
-function copyLayoutFromMaster ({ templateZip, outputZip, templateLayoutPath, newMasterPath, state }) {
+function copyLayoutFromMaster ({
+  templateZip,
+  outputZip,
+  templateLayoutPath,
+  newMasterPath,
+  state,
+}) {
   if (state.layoutMap.has(templateLayoutPath)) {
     return state.layoutMap.get(templateLayoutPath)
   }
@@ -829,7 +908,10 @@ function copyLayoutFromMaster ({ templateZip, outputZip, templateLayoutPath, new
         return rel
       }
       if (rel.Type === REL_TYPES.image) {
-        const mediaPath = resolveRelationshipPath(templateLayoutPath, rel.Target)
+        const mediaPath = resolveRelationshipPath(
+          templateLayoutPath,
+          rel.Target,
+        )
         const newMediaTarget = copyMediaFile({
           templateZip,
           outputZip,
@@ -858,7 +940,12 @@ function copyLayoutFromMaster ({ templateZip, outputZip, templateLayoutPath, new
   return info
 }
 
-function ensureThemeAssets ({ templateZip, outputZip, templateThemePath, state }) {
+function ensureThemeAssets ({
+  templateZip,
+  outputZip,
+  templateThemePath,
+  state,
+}) {
   if (state.themeMap.has(templateThemePath)) {
     return state.themeMap.get(templateThemePath)
   }
@@ -885,7 +972,7 @@ function copyMediaFile ({ templateZip, outputZip, sourcePath, state }) {
     console.warn(`⚠️ 模板中引用了不存在的资源：${sourcePath}，已跳过复制。`)
     return sourcePath // 返回原路径，尽管它可能无效
   }
-  const ext = path.extname(sourcePath) || '.bin'
+  const ext = path.extname(sourcePath) || ".bin"
   const newName = `ppt/media/template_media_${state.mediaCounter++}${ext}`
   outputZip.file(newName, file.asNodeBuffer())
   state.mediaMap.set(sourcePath, newName)
@@ -893,7 +980,7 @@ function copyMediaFile ({ templateZip, outputZip, sourcePath, state }) {
 }
 
 function copyGenericPart ({ templateZip, outputZip, sourcePath, state }) {
-  if (!sourcePath.startsWith('ppt/')) {
+  if (!sourcePath.startsWith("ppt/")) {
     return sourcePath
   }
   if (outputZip.file(sourcePath)) {
@@ -907,11 +994,11 @@ function copyGenericPart ({ templateZip, outputZip, sourcePath, state }) {
       outputZip.file(sourcePath, part.asText())
     }
   }
-  if (sourcePath.startsWith('ppt/notesSlides/')) {
+  if (sourcePath.startsWith("ppt/notesSlides/")) {
     ensureContentType(
       state,
       `/${sourcePath}`,
-      'application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml',
+      "application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml",
     )
   }
   return sourcePath
@@ -919,11 +1006,11 @@ function copyGenericPart ({ templateZip, outputZip, sourcePath, state }) {
 
 // --- 核心修复：Content Type 检查逻辑 ---
 function ensureDefaultContentType (state, extension, contentType) {
-  const ext = extension.replace(/^\./, '').toLowerCase()
+  const ext = extension.replace(/^\./, "").toLowerCase()
 
   // 修复：使用正则检查 Extension 属性，不限定顺序，支持单双引号
   // 匹配 <Default ... Extension="png" ...> 或 <Default ... Extension='png' ...>
-  const regex = new RegExp(`<Default[^>]*Extension=["']${ext}["'][^>]*>`, 'i')
+  const regex = new RegExp(`<Default[^>]*Extension=["']${ext}["'][^>]*>`, "i")
 
   if (state.contentTypesContent.match(regex)) {
     return
@@ -941,16 +1028,22 @@ function ensureDefaultContentType (state, extension, contentType) {
 
 function ensureContentType (state, partName, contentType) {
   // 修复：PartName 匹配支持单双引号
-  const partNameRegex = new RegExp(`<Override[^>]*PartName=["']${partName}["'][^>]*>`, 'i')
+  const partNameRegex = new RegExp(
+    `<Override[^>]*PartName=["']${partName}["'][^>]*>`,
+    "i",
+  )
   if (state.contentTypesContent.match(partNameRegex)) {
     return
   }
   const override = `  <Override PartName="${partName}" ContentType="${contentType}"/>`
-  const typesEndIndex = state.contentTypesContent.lastIndexOf('</Types>')
+  const typesEndIndex = state.contentTypesContent.lastIndexOf("</Types>")
   if (typesEndIndex === -1) {
-    throw new Error('Content_Types.xml缺少</Types>结束标签')
+    throw new Error("Content_Types.xml缺少</Types>结束标签")
   }
-  state.contentTypesContent = state.contentTypesContent.slice(0, typesEndIndex) + `\n${override}\n` + state.contentTypesContent.slice(typesEndIndex)
+  state.contentTypesContent =
+    state.contentTypesContent.slice(0, typesEndIndex) +
+    `\n${override}\n` +
+    state.contentTypesContent.slice(typesEndIndex)
 }
 
 function updatePresentationDocuments (zip, state) {
@@ -959,41 +1052,62 @@ function updatePresentationDocuments (zip, state) {
   }
   const slideEntries = extractExistingSlideEntries(state.presContent)
   const updatedSlideEntries = buildSlideEntries(slideEntries, state)
-  state.presContent = state.presContent.replace(slideEntries.raw, updatedSlideEntries.xml)
+  state.presContent = state.presContent.replace(
+    slideEntries.raw,
+    updatedSlideEntries.xml,
+  )
   const updatedRels = appendSlideRelationships(state.presRelsContent, state)
   state.presRelsContent = updatedRels
   const updatedMasters = appendMasterEntries(state.presContent, state)
   state.presContent = updatedMasters
   for (const slide of state.newSlides) {
-    ensureContentType(state, `/ppt/slides/slide${slide.slideNumber}.xml`, CONTENT_TYPES.slide)
+    ensureContentType(
+      state,
+      `/ppt/slides/slide${slide.slideNumber}.xml`,
+      CONTENT_TYPES.slide,
+    )
   }
   for (const [templatePath, layoutInfo] of state.layoutMap.entries()) {
-    ensureContentType(state, `/${layoutInfo.newPath}`, CONTENT_TYPES.slideLayout)
+    ensureContentType(
+      state,
+      `/${layoutInfo.newPath}`,
+      CONTENT_TYPES.slideLayout,
+    )
   }
   for (const [templatePath, masterInfo] of state.masterMap.entries()) {
-    ensureContentType(state, `/${masterInfo.newPath}`, CONTENT_TYPES.slideMaster)
+    ensureContentType(
+      state,
+      `/${masterInfo.newPath}`,
+      CONTENT_TYPES.slideMaster,
+    )
   }
   for (const [templatePath, themeInfo] of state.themeMap.entries()) {
     ensureContentType(state, `/${themeInfo.newPath}`, CONTENT_TYPES.theme)
   }
-  zip.file('ppt/presentation.xml', state.presContent)
-  zip.file('ppt/_rels/presentation.xml.rels', state.presRelsContent)
-  zip.file('[Content_Types].xml', state.contentTypesContent)
+  zip.file("ppt/presentation.xml", state.presContent)
+  zip.file("ppt/_rels/presentation.xml.rels", state.presRelsContent)
+  zip.file("[Content_Types].xml", state.contentTypesContent)
   state.newSlides = []
 }
 
 function extractExistingSlideEntries (presContent) {
-  const match = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/) || { raw: '<p:sldIdLst></p:sldIdLst>', inner: '' }
+  const match = presContent.match(/<p:sldIdLst>([\s\S]*?)<\/p:sldIdLst>/) || {
+    raw: "<p:sldIdLst></p:sldIdLst>",
+    inner: "",
+  }
   return { raw: match[0], inner: match[1] }
 }
 
 function buildSlideEntries (existing, state) {
   const existingEntries = existing.inner
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
   const newSlides = state.newSlides.map((slide) => {
-    while (state.existingSlideIds.has(state.nextSlideId) || state.nextSlideId <= 256) {
+    while (
+      state.existingSlideIds.has(state.nextSlideId) ||
+      state.nextSlideId <= 256
+    ) {
       state.nextSlideId++
     }
     slide.slideId = state.nextSlideId
@@ -1007,28 +1121,35 @@ function buildSlideEntries (existing, state) {
     state.nextRelId++
     return slide
   })
-  const entryFor = (slide) => `    <p:sldId id="${slide.slideId}" r:id="${slide.relId}"/>`
-  const startEntries = newSlides.filter((s) => s.position === 'start').map(entryFor)
-  const middleEntries = newSlides.filter((s) => s.position === 'middle').map(entryFor)
-  const endEntries = newSlides.filter((s) => s.position === 'end').map(entryFor)
+  const entryFor = (slide) =>
+    `    <p:sldId id="${slide.slideId}" r:id="${slide.relId}"/>`
+  const startEntries = newSlides
+    .filter((s) => s.position === "start")
+    .map(entryFor)
+  const middleEntries = newSlides
+    .filter((s) => s.position === "middle")
+    .map(entryFor)
+  const endEntries = newSlides
+    .filter((s) => s.position === "end")
+    .map(entryFor)
   // 正确顺序：start -> existing -> middle -> end
   const xml = `<p:sldIdLst>
-${[...startEntries, ...existingEntries, ...middleEntries, ...endEntries].join('\n')}
+${[...startEntries, ...existingEntries, ...middleEntries, ...endEntries].join("\n")}
 </p:sldIdLst>`
   return { xml }
 }
 
 function appendSlideRelationships (relsContent, state) {
-  const insertIndex = relsContent.indexOf('</Relationships>')
+  const insertIndex = relsContent.indexOf("</Relationships>")
   if (insertIndex === -1) {
-    throw new Error('presentation.xml.rels 内容异常')
+    throw new Error("presentation.xml.rels 内容异常")
   }
   const slideRels = state.newSlides
     .map(
       (slide) =>
         `  <Relationship Id="${slide.relId}" Type="${REL_TYPES.slide}" Target="slides/slide${slide.slideNumber}.xml"/>`,
     )
-    .join('\n')
+    .join("\n")
   return `${relsContent.slice(0, insertIndex)}${slideRels}\n${relsContent.slice(insertIndex)}`
 }
 
@@ -1037,14 +1158,16 @@ function appendMasterEntries (presContent, state) {
     return presContent
   }
   const relsContent = state.presRelsContent
-  const insertIndex = relsContent.indexOf('</Relationships>')
+  const insertIndex = relsContent.indexOf("</Relationships>")
   if (insertIndex === -1) {
-    throw new Error('presentation.xml.rels 缺少 Relationships 结束标签')
+    throw new Error("presentation.xml.rels 缺少 Relationships 结束标签")
   }
-  const masterListMatch = presContent.match(/<p:sldMasterIdLst>([\s\S]*?)<\/p:sldMasterIdLst>/) || { 1: '' }
+  const masterListMatch = presContent.match(
+    /<p:sldMasterIdLst>([\s\S]*?)<\/p:sldMasterIdLst>/,
+  ) || { 1: "" }
   const existingEntries = masterListMatch[1]
     ? masterListMatch[1]
-      .split('\n')
+      .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
     : []
@@ -1062,8 +1185,8 @@ function appendMasterEntries (presContent, state) {
     newMasterEntries.push(entry)
     newMasterRels.push(
       `  <Relationship Id="${relId}" Type="${REL_TYPES.slideMaster}" Target="${info.newPath.replace(
-        'ppt/',
-        '',
+        "ppt/",
+        "",
       )}"/>`,
     )
     state.existingMasterIds.add(state.nextMasterId)
@@ -1072,21 +1195,21 @@ function appendMasterEntries (presContent, state) {
     state.nextRelId++
   }
   const newMasterList = `<p:sldMasterIdLst>
-${[...existingEntries, ...newMasterEntries].join('\n')}
+${[...existingEntries, ...newMasterEntries].join("\n")}
 </p:sldMasterIdLst>`
   let updatedPres = presContent
   if (masterListMatch[0]) {
     updatedPres = presContent.replace(masterListMatch[0], newMasterList)
   } else {
     updatedPres = presContent.replace(
-      '</p:presentation>',
+      "</p:presentation>",
       `${newMasterList}\n</p:presentation>`,
     )
   }
   const updatedRelsContent = `${relsContent.slice(
     0,
     insertIndex,
-  )}${newMasterRels.join('\n')}\n${relsContent.slice(insertIndex)}`
+  )}${newMasterRels.join("\n")}\n${relsContent.slice(insertIndex)}`
   state.presRelsContent = updatedRelsContent
   return updatedPres
 }
@@ -1112,10 +1235,10 @@ function buildRelationshipsXml (rels) {
     .map((rel) => {
       const attrs = Object.entries(rel)
         .map(([key, value]) => `${key}="${value}"`)
-        .join(' ')
+        .join(" ")
       return `  <Relationship ${attrs}/>`
     })
-    .join('\n')
+    .join("\n")
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 ${items}
@@ -1136,8 +1259,8 @@ function resolveRelationshipPath (from, target) {
 function relativePath (from, to) {
   const fromDir = path.posix.dirname(from)
   let relPath = path.posix.relative(fromDir, to)
-  relPath = relPath.replace(/\\/g, '/')
-  relPath = relPath.replace(/^\.\//g, '')
+  relPath = relPath.replace(/\\/g, "/")
+  relPath = relPath.replace(/^\.\//g, "")
   return relPath
 }
 
@@ -1167,67 +1290,85 @@ function getInitialMediaCounter (zip) {
 
 function applyCoverPlaceholders (xml, employee = {}) {
   const replacements = {
-    姓名: employee.name || '',
-    性别: employee.gender || '',
-    年龄: employee.age || '',
-    日期: employee.date || '',
-    工号: employee.id || '',
+    姓名: employee.name || "",
+    性别: employee.gender || "",
+    年龄: employee.age || "",
+    日期: employee.date || "",
+    工号: employee.id || "",
   }
   return replaceTextInSlidePreferred(xml, replacements)
 }
 
 function formatCnDate (dateInput) {
-  const date = dateInput instanceof Date ? dateInput : new Date(dateInput || Date.now())
+  const date =
+    dateInput instanceof Date ? dateInput : new Date(dateInput || Date.now())
   if (Number.isNaN(date.getTime())) {
-    return ''
+    return ""
   }
   const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
   return `${year}年${month}月${day}日`
 }
 
 function escapeXmlValue (value) {
-  if (!value) return ''
+  if (!value) return ""
   return String(value)
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
 }
 
 function replaceTextInSlidePreferred (xmlContent, replacements) {
   let result = xmlContent
-  const optionalSpaces = '(?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*'
+  const optionalSpaces = "(?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*"
   for (const [key, value] of Object.entries(replacements)) {
     if (value === undefined || value === null) continue
     const valueStr = String(value)
-    if (!valueStr && key !== '性别' && key !== '年龄') continue
+    if (!valueStr && key !== "性别" && key !== "年龄") continue
     const escapedValue = escapeXmlValue(valueStr)
     const keyPattern = escapeRegex(key)
     const textRunPattern = /(<a:t[^>]*>)([\s\S]*?)(<\/a:t>)/gi
-    result = result.replace(textRunPattern, (match, openTag, content, closeTag) => {
-      let updatedContent = content
-      const placeholderPattern = new RegExp(`\\{\\{${optionalSpaces}${keyPattern}${optionalSpaces}\\}\}${optionalSpaces}`, 'gi')
-      updatedContent = updatedContent.replace(placeholderPattern, (phMatch) => {
-        const suffixMatch = phMatch.match(/((?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*)$/i)
-        const suffix = suffixMatch ? suffixMatch[1] : ''
-        return `${escapedValue}${suffix}`
-      })
-      const bracketPattern = new RegExp(`\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`, 'gi')
-      updatedContent = updatedContent.replace(bracketPattern, escapedValue)
-      const directPattern = new RegExp(`${optionalSpaces}${keyPattern}${optionalSpaces}`, 'gi')
-      updatedContent = updatedContent.replace(directPattern, escapedValue)
-      return `${openTag}${updatedContent}${closeTag}`
-    })
+    result = result.replace(
+      textRunPattern,
+      (match, openTag, content, closeTag) => {
+        let updatedContent = content
+        const placeholderPattern = new RegExp(
+          `\\{\\{${optionalSpaces}${keyPattern}${optionalSpaces}\\}\}${optionalSpaces}`,
+          "gi",
+        )
+        updatedContent = updatedContent.replace(
+          placeholderPattern,
+          (phMatch) => {
+            const suffixMatch = phMatch.match(
+              /((?:\\s|\\u00A0|&nbsp;|&#160;|&#xA0;)*)$/i,
+            )
+            const suffix = suffixMatch ? suffixMatch[1] : ""
+            return `${escapedValue}${suffix}`
+          },
+        )
+        const bracketPattern = new RegExp(
+          `\\[${optionalSpaces}${keyPattern}${optionalSpaces}\\]`,
+          "gi",
+        )
+        updatedContent = updatedContent.replace(bracketPattern, escapedValue)
+        const directPattern = new RegExp(
+          `${optionalSpaces}${keyPattern}${optionalSpaces}`,
+          "gi",
+        )
+        updatedContent = updatedContent.replace(directPattern, escapedValue)
+        return `${openTag}${updatedContent}${closeTag}`
+      },
+    )
   }
   return result
 }
 
 function escapeRegex (str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 // --- 并发控制工具函数 ---
@@ -1235,7 +1376,7 @@ async function limitConcurrency (tasks, maxConcurrency) {
   const results = []
   const executing = []
   for (const task of tasks) {
-    const promise = Promise.resolve(task()).then(result => {
+    const promise = Promise.resolve(task()).then((result) => {
       executing.splice(executing.indexOf(promise), 1)
       return result
     })
@@ -1287,7 +1428,9 @@ class PdfConversionQueue {
 }
 
 // 创建全局 PDF 转换队列实例
-const pdfConversionQueue = new PdfConversionQueue(MAX_CONCURRENT_PDF_CONVERSIONS)
+const pdfConversionQueue = new PdfConversionQueue(
+  MAX_CONCURRENT_PDF_CONVERSIONS,
+)
 
 // 模板文件缓存
 let templateBufferCache = null
@@ -1306,22 +1449,34 @@ function clearTemplateCache () {
   templateZipCache = null
 }
 
-function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber) {
+function replaceImagePlaceholder (
+  slideXml,
+  image,
+  state,
+  outputZip,
+  slideNumber,
+) {
   try {
-    let ext = '.png'
-    let mimeType = 'image/png'
+    let ext = ".png"
+    let mimeType = "image/png"
     if (image.data) {
       const dataUrlMatch = image.data.match(/^data:(image\/\w+);base64,/)
       if (dataUrlMatch) {
         mimeType = dataUrlMatch[1]
-        ext = `.${mimeType.split('/')[1]}`
+        ext = `.${mimeType.split("/")[1]}`
       }
     } else if (image.fullPath) {
-      ext = path.extname(image.fullPath) || '.png'
-      mimeType = ext.toLowerCase().includes('png') ? 'image/png' :
-        ext.toLowerCase().includes('jpg') || ext.toLowerCase().includes('jpeg') ? 'image/jpeg' :
-          ext.toLowerCase().includes('gif') ? 'image/gif' :
-            ext.toLowerCase().includes('bmp') ? 'image/bmp' : 'image/png'
+      ext = path.extname(image.fullPath) || ".png"
+      mimeType = ext.toLowerCase().includes("png")
+        ? "image/png"
+        : ext.toLowerCase().includes("jpg") ||
+          ext.toLowerCase().includes("jpeg")
+          ? "image/jpeg"
+          : ext.toLowerCase().includes("gif")
+            ? "image/gif"
+            : ext.toLowerCase().includes("bmp")
+              ? "image/bmp"
+              : "image/png"
     } else {
       console.warn(`⚠️ 图片数据为空，跳过处理`)
       return slideXml
@@ -1330,8 +1485,8 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
     ensureDefaultContentType(state, ext, mimeType)
     let buffer
     if (image.data) {
-      const base64Data = image.data.replace(/^data:image\/\w+;base64,/, '')
-      buffer = Buffer.from(base64Data, 'base64')
+      const base64Data = image.data.replace(/^data:image\/\w+;base64,/, "")
+      buffer = Buffer.from(base64Data, "base64")
     } else if (image.fullPath) {
       buffer = fs.readFileSync(image.fullPath)
     } else {
@@ -1344,7 +1499,7 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
     const mapKey = `slide${slideNumber}_main`
     state.mediaMap.set(mapKey, newImagePath)
     let updatedXml = slideXml
-    updatedXml = updatedXml.replace(/\{\{\s*图片\s*\}\}/g, '')
+    updatedXml = updatedXml.replace(/\{\{\s*图片\s*\}\}/g, "")
     return updatedXml
   } catch (err) {
     console.warn(`⚠️ 替换幻灯片图片失败：${err.message}`)
@@ -1353,8 +1508,15 @@ function replaceImagePlaceholder (slideXml, image, state, outputZip, slideNumber
 }
 
 // 按照模板顺序插入图片页面：inbody -> lab -> ecg -> ai
-async function insertImageSlidesByCategory (templatePath, outputPath, imageItems, employee, category, templateSlideNumber) {
-  const categoryImages = imageItems.filter(img => img.category === category)
+async function insertImageSlidesByCategory (
+  templatePath,
+  outputPath,
+  imageItems,
+  employee,
+  category,
+  templateSlideNumber,
+) {
+  const categoryImages = imageItems.filter((img) => img.category === category)
   if (categoryImages.length === 0) {
     return
   }
@@ -1379,11 +1541,17 @@ async function insertImageSlidesByCategory (templatePath, outputPath, imageItems
     const newSlidePath = `ppt/slides/slide${newSlideNumber}.xml`
     let slideXml = templateSlide.asText()
     const replacements = {
-      姓名: employee.name || '',
-      工号: employee.id || '',
+      姓名: employee.name || "",
+      工号: employee.id || "",
     }
     slideXml = replaceTextInSlidePreferred(slideXml, replacements)
-    slideXml = replaceImagePlaceholder(slideXml, image, state, outputZip, newSlideNumber)
+    slideXml = replaceImagePlaceholder(
+      slideXml,
+      image,
+      state,
+      outputZip,
+      newSlideNumber,
+    )
     outputZip.file(newSlidePath, slideXml)
     cloneSlideRelationships({
       templateZip,
@@ -1392,10 +1560,14 @@ async function insertImageSlidesByCategory (templatePath, outputPath, imageItems
       newSlideNumber,
       state,
     })
-    ensureContentType(state, `/ppt/slides/slide${newSlideNumber}.xml`, CONTENT_TYPES.slide)
+    ensureContentType(
+      state,
+      `/ppt/slides/slide${newSlideNumber}.xml`,
+      CONTENT_TYPES.slide,
+    )
     newSlides.push({
       slideNumber: newSlideNumber,
-      position: 'middle', // 图片页面应该在封面之后，总结页之前
+      position: "middle", // 图片页面应该在封面之后，总结页之前
     })
   }
 
@@ -1405,8 +1577,8 @@ async function insertImageSlidesByCategory (templatePath, outputPath, imageItems
   state.newSlides = newSlides
   updatePresentationDocuments(outputZip, state)
   const updatedBuffer = outputZip.generate({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
+    type: "nodebuffer",
+    compression: "DEFLATE",
     compressionOptions: { level: 6 },
   })
   await fs.writeFile(outputPath, updatedBuffer)
@@ -1417,24 +1589,24 @@ async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
   const MAX_RETRIES = 2
   const RETRY_DELAY = 1000 // 重试延迟1秒
 
-  const pdfPath = pptxPath.replace(/\.pptx$/i, '.pdf')
+  const pdfPath = pptxPath.replace(/\.pptx$/i, ".pdf")
 
   // 添加小延迟，避免LibreOffice进程冲突
   if (retryCount === 0) {
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await new Promise((resolve) => setTimeout(resolve, 200))
   }
 
   const pptxBuf = await fs.readFile(pptxPath)
   try {
-    const pdfBuf = await convertAsync(pptxBuf, '.pdf', 'impress_pdf_Export')
+    const pdfBuf = await convertAsync(pptxBuf, ".pdf", "impress_pdf_Export")
     await fs.writeFile(pdfPath, pdfBuf)
   } catch (err) {
     // 如果 libreoffice-convert 失败，使用 soffice 命令行
     const candidates = [
       process.env.LIBREOFFICE_PATH,
       process.env.SOFFICE_PATH,
-      'C:/Program Files/LibreOffice/program/soffice.exe',
-      'C:/Program Files (x86)/LibreOffice/program/soffice.exe',
+      "C:/Program Files/LibreOffice/program/soffice.exe",
+      "C:/Program Files (x86)/LibreOffice/program/soffice.exe",
     ].filter(Boolean)
     let sofficePath = null
     for (const p of candidates) {
@@ -1446,7 +1618,9 @@ async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
       } catch { }
     }
     if (!sofficePath) {
-      throw new Error('未找到 soffice，可设置 LIBREOFFICE_PATH 或 SOFFICE_PATH 指向 soffice.exe')
+      throw new Error(
+        "未找到 soffice，可设置 LIBREOFFICE_PATH 或 SOFFICE_PATH 指向 soffice.exe",
+      )
     }
 
     const outDir = path.dirname(pdfPath)
@@ -1461,34 +1635,34 @@ async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
 
     await new Promise((resolve, reject) => {
       const args = [
-        '--headless',
-        '--invisible',
-        '--nodefault',
-        '--nolockcheck',
-        '--convert-to',
+        "--headless",
+        "--invisible",
+        "--nodefault",
+        "--nolockcheck",
+        "--convert-to",
         'pdf:impress_pdf_Export:{"ReduceImageResolution":false,"Quality":100}',
-        '--outdir',
+        "--outdir",
         outDir,
         pptxPath,
       ]
       const child = spawn(sofficePath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       })
-      let stderr = ''
-      let stdout = ''
-      child.stdout.on('data', (d) => {
+      let stderr = ""
+      let stdout = ""
+      child.stdout.on("data", (d) => {
         stdout += String(d)
       })
-      child.stderr.on('data', (d) => {
+      child.stderr.on("data", (d) => {
         stderr += String(d)
       })
-      child.on('error', (e) => reject(e))
-      child.on('close', (code) => {
+      child.on("error", (e) => reject(e))
+      child.on("close", (code) => {
         if (code === 0) {
           resolve()
         } else {
-          const errorMsg = stderr.trim() || stdout.trim() || '未知错误'
+          const errorMsg = stderr.trim() || stdout.trim() || "未知错误"
           reject(new Error(`soffice 退出码 ${code}: ${errorMsg}`))
         }
       })
@@ -1497,27 +1671,31 @@ async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
     // 等待文件生成
     let attempts = 0
     while (attempts < 10 && !(await fs.pathExists(pdfPath))) {
-      await new Promise(resolve => setTimeout(resolve, 200))
+      await new Promise((resolve) => setTimeout(resolve, 200))
       attempts++
     }
 
     if (!(await fs.pathExists(pdfPath))) {
       if (retryCount < MAX_RETRIES) {
-        console.warn(`⚠️ PDF 文件未生成，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`)
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        console.warn(
+          `⚠️ PDF 文件未生成，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`,
+        )
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY))
         return _convertPptxToPdfInternal(pptxPath, retryCount + 1)
       }
-      throw new Error('soffice 执行后未生成 PDF 文件')
+      throw new Error("soffice 执行后未生成 PDF 文件")
     }
 
     const stat = await fs.stat(pdfPath)
     if (!stat.size) {
       if (retryCount < MAX_RETRIES) {
-        console.warn(`⚠️ PDF 文件为空，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`)
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        console.warn(
+          `⚠️ PDF 文件为空，${RETRY_DELAY}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})...`,
+        )
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY))
         return _convertPptxToPdfInternal(pptxPath, retryCount + 1)
       }
-      throw new Error('生成的 PDF 为空')
+      throw new Error("生成的 PDF 为空")
     }
   }
   return pdfPath
@@ -1525,20 +1703,24 @@ async function _convertPptxToPdfInternal (pptxPath, retryCount = 0) {
 
 // --- PPTX 转 PDF 公共接口（带并发控制）---
 async function convertPptxToPdf (pptxPath) {
-  return await pdfConversionQueue.add(() => _convertPptxToPdfInternal(pptxPath))
+  return await pdfConversionQueue.add(() =>
+    _convertPptxToPdfInternal(pptxPath),
+  )
 }
 // --------------------------------
 
 // 新增：转换result_add_suggest文件夹内的PPT为PDF
 async function convertResultPptToPdf () {
-  const RESULT_DIR = path.join(ROOT, 'result_add_suggest')
+  const RESULT_DIR = path.join(ROOT, "result_add_suggest")
   if (!(await fs.pathExists(RESULT_DIR))) {
     console.error(`❌ result_add_suggest 文件夹不存在`)
     return
   }
 
   const files = await fs.readdir(RESULT_DIR)
-  const pptxFiles = files.filter(file => path.extname(file).toLowerCase() === '.pptx')
+  const pptxFiles = files.filter(
+    (file) => path.extname(file).toLowerCase() === ".pptx",
+  )
 
   if (pptxFiles.length === 0) {
     console.log(`ℹ️ result_add_suggest 文件夹内没有PPT文件`)
@@ -1568,7 +1750,13 @@ async function convertResultPptToPdf () {
   console.log(`❌ 失败: ${failCount} 个`)
 }
 
-async function processEmployee (employee, availableFiles, templatePath, layout, nameCounter) {
+async function processEmployee (
+  employee,
+  availableFiles,
+  templatePath,
+  layout,
+  nameCounter,
+) {
   const assetInfo = await collectEmployeeAssets(employee, availableFiles)
   const hasSummary = Boolean(assetInfo.summaryText.trim())
   const hasAttachments = assetInfo.attachments.length > 0
@@ -1576,20 +1764,24 @@ async function processEmployee (employee, availableFiles, templatePath, layout, 
     return {
       success: false,
       employee,
-      reason: '缺少体检结果与AI总结',
+      reason: "缺少体检结果与AI总结",
     }
   }
 
   const pptx = initializePresentation(layout)
   const currentCount = nameCounter.get(employee.name) || 0
-  const suffix = currentCount > 0 ? `_${currentCount}` : ''
+  const suffix = currentCount > 0 ? `_${currentCount}` : ""
   const outputName = buildReportFileName(employee, suffix)
   const outputPath = path.join(OUTPUT_DIR, outputName)
   nameCounter.set(employee.name, currentCount + 1)
 
   await pptx.writeFile({ fileName: outputPath })
 
-  const options = { employee, date: new Date(), summary: assetInfo.summaryText }
+  const options = {
+    employee,
+    date: new Date(),
+    summary: assetInfo.summaryText,
+  }
 
   // 1. 先插入模板第1页（封面）
   await insertCoverSlide(templatePath, outputPath, options)
@@ -1598,10 +1790,38 @@ async function processEmployee (employee, availableFiles, templatePath, layout, 
   const imageItems = await buildImageItems(assetInfo, employee)
   if (imageItems.length > 0) {
     // 按照模板顺序逐个插入
-    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'inbody', 2)
-    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'lab', 3)
-    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'ecg', 4)
-    await insertImageSlidesByCategory(templatePath, outputPath, imageItems, employee, 'ai', 5)
+    await insertImageSlidesByCategory(
+      templatePath,
+      outputPath,
+      imageItems,
+      employee,
+      "inbody",
+      2,
+    )
+    await insertImageSlidesByCategory(
+      templatePath,
+      outputPath,
+      imageItems,
+      employee,
+      "lab",
+      3,
+    )
+    await insertImageSlidesByCategory(
+      templatePath,
+      outputPath,
+      imageItems,
+      employee,
+      "ecg",
+      4,
+    )
+    await insertImageSlidesByCategory(
+      templatePath,
+      outputPath,
+      imageItems,
+      employee,
+      "ai",
+      5,
+    )
   }
 
   // 3. 插入建议与指导（文字）第6页（如果有 has6WhitePage）
@@ -1632,7 +1852,9 @@ async function processEmployee (employee, availableFiles, templatePath, layout, 
       }
     } catch (pdfErr) {
       console.error(`❌ PDF 转换失败 (${employee.name}): ${pdfErr.message}`)
-      console.error(`   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`)
+      console.error(
+        `   请确保系统已安装 LibreOffice 并且 npm install libreoffice-convert 已运行。`,
+      )
       // PDF转换失败时，保留PPTX路径
     }
   }
@@ -1650,12 +1872,18 @@ async function main () {
   await fs.ensureDir(OUTPUT_DIR)
   await fs.ensureDir(PDF_IMAGE_DIR)
   await fs.ensureDir(PDF_TEMP_DIR)
-  const templatePath = await resolveExistingPath(TEMPLATE_CANDIDATES, '模板文件')
-  const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表')
+  const templatePath = await resolveExistingPath(
+    TEMPLATE_CANDIDATES,
+    "模板文件",
+  )
+  const sheetPath = await resolveExistingPath(
+    EMPLOYEE_SHEET_CANDIDATES,
+    "员工表",
+  )
   const layout = await loadTemplateLayout(templatePath)
   const employees = await loadEmployees(sheetPath)
   if (!employees.length) {
-    console.warn('⚠️ 员工表为空，已结束。')
+    console.warn("⚠️ 员工表为空，已结束。")
     return
   }
 
@@ -1668,12 +1896,23 @@ async function main () {
   const nameCounter = new Map()
 
   // 创建处理任务
-  const tasks = employees.map(employee => async () => {
+  const tasks = employees.map((employee) => async () => {
     try {
-      const result = await processEmployee(employee, availableFiles, templatePath, layout, nameCounter)
+      const result = await processEmployee(
+        employee,
+        availableFiles,
+        templatePath,
+        layout,
+        nameCounter,
+      )
       if (result.success) {
-        successReports.push({ employee: result.employee, outputPath: result.outputPath })
-        console.log(`✓ 已生成 ${result.employee.name}（${result.employee.id}）：${result.outputPath}`)
+        successReports.push({
+          employee: result.employee,
+          outputPath: result.outputPath,
+        })
+        console.log(
+          `✓ 已生成 ${result.employee.name}（${result.employee.id}）：${result.outputPath}`,
+        )
       } else {
         skippedEmployees.push({
           employee: result.employee,
@@ -1692,7 +1931,9 @@ async function main () {
   })
 
   // 使用并发控制处理所有员工
-  console.log(`🚀 开始处理 ${employees.length} 个员工，并发数：${MAX_CONCURRENT_EMPLOYEES}`)
+  console.log(
+    `🚀 开始处理 ${employees.length} 个员工，并发数：${MAX_CONCURRENT_EMPLOYEES}`,
+  )
   await limitConcurrency(tasks, MAX_CONCURRENT_EMPLOYEES)
 
   // 清理模板缓存
@@ -1701,28 +1942,35 @@ async function main () {
   const endTime = Date.now()
   const duration = ((endTime - startTime) / 1000).toFixed(2)
 
-  console.log('\n===== 生成统计 =====')
+  console.log("\n===== 生成统计 =====")
   console.log(`✅ 已生成：${successReports.length} 人`)
   successReports.forEach((item) => {
-    console.log(`  - ${item.employee.name}（${item.employee.id}） -> ${item.outputPath}`)
+    console.log(
+      `  - ${item.employee.name}（${item.employee.id}） -> ${item.outputPath}`,
+    )
   })
   console.log(`⚠️ 未生成：${skippedEmployees.length} 人`)
   skippedEmployees.forEach((item) => {
-    console.log(`  - ${item.employee.name}（${item.employee.id}）：${item.reason}`)
+    console.log(
+      `  - ${item.employee.name}（${item.employee.id}）：${item.reason}`,
+    )
   })
   console.log(`⏱️ 总耗时：${duration} 秒`)
 }
 
 // 新增：处理result_add_suggest文件夹下的PPT文件名，添加证件号
 async function renameResultPptFiles () {
-  const RESULT_DIR = path.join(ROOT, 'result_add_suggest')
+  const RESULT_DIR = path.join(ROOT, "result_add_suggest")
   if (!(await fs.pathExists(RESULT_DIR))) {
     console.error(`❌ result_add_suggest 文件夹不存在`)
     return
   }
 
   // 读取员工表数据
-  const sheetPath = await resolveExistingPath(EMPLOYEE_SHEET_CANDIDATES, '员工表')
+  const sheetPath = await resolveExistingPath(
+    EMPLOYEE_SHEET_CANDIDATES,
+    "员工表",
+  )
   const employees = await loadEmployees(sheetPath)
 
   // 建立姓名到证件号的映射
@@ -1735,7 +1983,9 @@ async function renameResultPptFiles () {
 
   // 获取文件夹中的PPT文件
   const files = await fs.readdir(RESULT_DIR)
-  const pptxFiles = files.filter(file => path.extname(file).toLowerCase() === '.pptx')
+  const pptxFiles = files.filter(
+    (file) => path.extname(file).toLowerCase() === ".pptx",
+  )
 
   if (pptxFiles.length === 0) {
     console.log(`ℹ️ result_add_suggest 文件夹内没有PPT文件`)
@@ -1750,7 +2000,9 @@ async function renameResultPptFiles () {
   for (const pptxFile of pptxFiles) {
     try {
       // 从文件名中提取姓名
-      const nameMatch = pptxFile.match(/^体检报告_([^_]+?)(?:_\d+)?(?:_[\dXx]+)?\.pptx$/i)
+      const nameMatch = pptxFile.match(
+        /^体检报告_([^_]+?)(?:_\d+)?(?:_[\dXx]+)?\.pptx$/i,
+      )
       if (!nameMatch) {
         console.warn(`⚠️ 文件名格式不符合要求：${pptxFile}，跳过`)
         skipCount++
@@ -1787,7 +2039,7 @@ async function renameResultPptFiles () {
       }
 
       // 生成新文件名
-      const baseName = path.basename(pptxFile, '.pptx')
+      const baseName = path.basename(pptxFile, ".pptx")
       const newFileName = `${baseName}_${id}.pptx`
       const oldPath = path.join(RESULT_DIR, pptxFile)
       const newPath = path.join(RESULT_DIR, newFileName)
@@ -1809,14 +2061,16 @@ async function renameResultPptFiles () {
 
 // 新增：读取send_data文件下的pdf文件，并从文件名中提取证件号并打印
 async function extractIdFromPdfNames () {
-  const SEND_DATA_DIR = path.join(ROOT, 'send_data')
+  const SEND_DATA_DIR = path.join(ROOT, "send_data")
   if (!(await fs.pathExists(SEND_DATA_DIR))) {
     console.error(`❌ send_data 文件夹不存在`)
     return
   }
 
   const files = await fs.readdir(SEND_DATA_DIR)
-  const pdfFiles = files.filter(file => path.extname(file).toLowerCase() === '.pdf')
+  const pdfFiles = files.filter(
+    (file) => path.extname(file).toLowerCase() === ".pdf",
+  )
 
   if (pdfFiles.length === 0) {
     console.log(`ℹ️ send_data 文件夹内没有PDF文件`)
@@ -1829,8 +2083,8 @@ async function extractIdFromPdfNames () {
   let failCount = 0
 
   // 导入axios和form-data库
-  const axios = require('axios')
-  const FormData = require('form-data')
+  const axios = require("axios")
+  const FormData = require("form-data")
 
   // 定义发送POST请求获取企信ID的函数
   async function getQixinId (sfz) {
@@ -1841,14 +2095,16 @@ async function extractIdFromPdfNames () {
         {},
         {
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+        },
       )
       return response.data
     } catch (error) {
       if (error.response) {
-        throw new Error(`请求失败: ${error.response.status} ${error.response.statusText}`)
+        throw new Error(
+          `请求失败: ${error.response.status} ${error.response.statusText}`,
+        )
       } else if (error.request) {
         throw new Error(`请求失败: 没有收到响应`)
       } else {
@@ -1863,9 +2119,9 @@ async function extractIdFromPdfNames () {
       // 创建form-data对象
       const formData = new FormData()
       // 添加文件
-      formData.append('file', fs.createReadStream(fileFullPath), {
+      formData.append("file", fs.createReadStream(fileFullPath), {
         filename: fileName,
-        contentType: 'application/pdf'
+        contentType: "application/pdf",
       })
 
       // 使用axios发送POST请求
@@ -1874,14 +2130,16 @@ async function extractIdFromPdfNames () {
         formData,
         {
           headers: {
-            ...formData.getHeaders()
-          }
-        }
+            ...formData.getHeaders(),
+          },
+        },
       )
       return response.data
     } catch (error) {
       if (error.response) {
-        throw new Error(`发送文件失败: ${error.response.status} ${error.response.statusText}`)
+        throw new Error(
+          `发送文件失败: ${error.response.status} ${error.response.statusText}`,
+        )
       } else if (error.request) {
         throw new Error(`发送文件失败: 没有收到响应`)
       } else {
@@ -1893,7 +2151,9 @@ async function extractIdFromPdfNames () {
   for (const pdfFile of pdfFiles) {
     try {
       // 从文件名中提取证件号，命名规则：体检报告_姓名_证件号.pdf 或 体检报告_姓名_证件号_数字.pdf
-      const idMatch = pdfFile.match(/^体检报告_([^_]+)_([\dXx]+)(?:_\d+)?\.pdf$/)
+      const idMatch = pdfFile.match(
+        /^体检报告_([^_]+)_([\dXx]+)(?:_\d+)?\.pdf$/,
+      )
       if (!idMatch) {
         console.warn(`⚠️ 文件名格式不符合要求：${pdfFile}`)
         failCount++
@@ -1920,7 +2180,7 @@ async function extractIdFromPdfNames () {
         if (sendResult.code === 1) {
           console.log(`✅ 文件发送成功：${sendResult.message}`)
         } else {
-          console.warn(`⚠️ 文件发送失败：${sendResult.message || '未知错误'}`)
+          console.warn(`⚠️ 文件发送失败：${sendResult.message || "未知错误"}`)
         }
       } else {
         console.warn(`⚠️ 企信ID获取失败：${qixinResult.returnMessage}`)
@@ -1940,28 +2200,28 @@ async function extractIdFromPdfNames () {
 
 // 检查命令行参数
 const args = process.argv.slice(2)
-if (args.includes('--convert-ppt-pdf')) {
+if (args.includes("--convert-ppt-pdf")) {
   // 执行PPT转PDF命令
   convertResultPptToPdf().catch((error) => {
-    console.error('❌ 转换失败：', error)
+    console.error("❌ 转换失败：", error)
     process.exitCode = 1
   })
-} else if (args.includes('--rename-ppt-files')) {
+} else if (args.includes("--rename-ppt-files")) {
   // 执行PPT文件名重命名命令
   renameResultPptFiles().catch((error) => {
-    console.error('❌ 重命名失败：', error)
+    console.error("❌ 重命名失败：", error)
     process.exitCode = 1
   })
-} else if (args.includes('--extract-id-from-pdf')) {
+} else if (args.includes("--extract-id-from-pdf")) {
   // 执行从PDF文件名提取证件号命令
   extractIdFromPdfNames().catch((error) => {
-    console.error('❌ 提取失败：', error)
+    console.error("❌ 提取失败：", error)
     process.exitCode = 1
   })
 } else {
   // 执行原始主流程
   main().catch((error) => {
-    console.error('❌ 生成失败：', error)
+    console.error("❌ 生成失败：", error)
     process.exitCode = 1
   })
 }
