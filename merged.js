@@ -2059,8 +2059,8 @@ async function renameResultPptFiles () {
   console.log(`⚠️ 跳过：${skipCount} 个`)
 }
 
-// 新增：读取send_data文件下的pdf文件，并从文件名中提取证件号并打印
-async function extractIdFromPdfNames () {
+// 将文件通过身份证号匹配然后发送企业微信
+async function sendWechatEeMsg () {
   const SEND_DATA_DIR = path.join(ROOT, "send_data")
   if (!(await fs.pathExists(SEND_DATA_DIR))) {
     console.error(`❌ send_data 文件夹不存在`)
@@ -2212,9 +2212,9 @@ if (args.includes("--convert-ppt-pdf")) {
     console.error("❌ 重命名失败：", error)
     process.exitCode = 1
   })
-} else if (args.includes("--extract-id-from-pdf")) {
-  // 执行从PDF文件名提取证件号命令
-  extractIdFromPdfNames().catch((error) => {
+} else if (args.includes("--send-wechat-ee-msg")) {
+  // 将文件通过身份证号匹配然后发送企业微信
+  sendWechatEeMsg().catch((error) => {
     console.error("❌ 提取失败：", error)
     process.exitCode = 1
   })
