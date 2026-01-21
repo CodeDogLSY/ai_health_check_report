@@ -9,7 +9,7 @@
  *   node merged.js                 # 主流程：生成报告
  *   node merged.js --convert-ppt-pdf      # 转换 result_add_suggest/ 下所有 PPTX 为 PDF
  *   node merged.js --rename-ppt-files     # 给 result_add_suggest/ 下 PPTX 文件名补充证件号
- *   node merged.js --extract-id-from-pdf  # 读取 send_data/ 下 PDF，提取证件号并尝试发送企信
+ *   node merged.js --send-wechat-ee-msg  # 读取 send_data/ 下 PDF，提取证件号并尝试发送企信
  *
  */
 
